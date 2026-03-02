@@ -33,11 +33,20 @@ INCLUDE_REPLACEMENT = (
     "#endif\n"
     "#include <stdint.h>\n"
     "\n"
-    "// Some PTO-ISA types (e.g. TMRGSORT's MrgSortExecutedNumList) are defined\n"
-    "// only in the CCE/AICore compilation path. The `bisheng -xcce` frontend\n"
-    "// still performs a host-side pass that needs to parse kernel signatures.\n"
-    "// Provide a minimal fallback so `launch.cpp` and host-side wrappers compile.\n"
-    "#if !defined(__CCE_AICORE__)\n"
+    "// AICore printf support is gated behind `--cce-enable-print` on some\n"
+    "// toolchains. When enabled, include the CCE print header so `cce::printf`\n"
+    "// resolves in device compilation.\n"
+    "#if defined(__CCE_AICORE__) && defined(PTOAS_ENABLE_CCE_PRINT)\n"
+    "#include <ccelib/print/print.h>\n"
+    "#endif\n"
+    "#include <pto/pto-inst.hpp>\n"
+    "#include <pto/common/constants.hpp>\n"
+    "\n"
+    "// Some PTO-ISA types are only available in the __CCE_AICORE__ compilation\n"
+    "// path, but `bisheng -xcce` still performs a host-side parse pass.\n"
+    "// Provide minimal fallbacks only when the corresponding header wasn't\n"
+    "// pulled in by the selected arch implementation.\n"
+    "#if !defined(__CCE_AICORE__) && !defined(TMRGSORT_HPP)\n"
     "namespace pto {\n"
     "struct MrgSortExecutedNumList {\n"
     "    uint16_t mrgSortList0;\n"
@@ -47,8 +56,6 @@ INCLUDE_REPLACEMENT = (
     "};\n"
     "} // namespace pto\n"
     "#endif\n"
-    "#include <pto/pto-inst.hpp>\n"
-    "#include <pto/common/constants.hpp>\n"
     "#ifndef __CPU_SIM\n"
     "#include \"acl/acl.h\"\n"
     "#endif\n"
@@ -1194,6 +1201,12 @@ def generate_testcase(
     if "910b" in sv or "950" in sv or "a5" in sv:
         mem_base_define = "REGISTER_BASE"
 
+    # CCE printing support is gated behind `--cce-enable-print` on some bisheng
+    # toolchains. Only enable it for kernels that actually emit printf.
+    needs_cce_print = bool(re.search(r"\b(?:bisheng::)?cce::printf\s*\(", raw_kernel_for_analysis))
+    cce_enable_print_opt = "    --cce-enable-print" if needs_cce_print else ""
+    cce_print_define_opt = "    -DPTOAS_ENABLE_CCE_PRINT=1" if needs_cce_print else ""
+
     cce_stack_size_opt = ""
     # `-mllvm -cce-aicore-stack-size=...` is rejected on some targets (e.g.
     # dav-l310 / dav-l311).
@@ -1256,15 +1269,17 @@ add_link_options(
     -Wl,-z,now
 )
 
-set(CMAKE_CCE_COMPILE_OPTIONS
-    -xcce
-    -fenable-matrix
-    --cce-aicore-enable-tl
-    -fPIC
-    -Xhost-start -Xhost-end
-{cce_stack_size_opt}\
-    "SHELL:-mllvm -cce-aicore-function-stack-size=0x8000"
-    "SHELL:-mllvm -cce-aicore-record-overflow=true"
+	set(CMAKE_CCE_COMPILE_OPTIONS
+	    -xcce
+	    -fenable-matrix
+	    --cce-aicore-enable-tl
+	{cce_enable_print_opt}
+	{cce_print_define_opt}
+	    -fPIC
+	    -Xhost-start -Xhost-end
+	{cce_stack_size_opt}\
+	    "SHELL:-mllvm -cce-aicore-function-stack-size=0x8000"
+	    "SHELL:-mllvm -cce-aicore-record-overflow=true"
     "SHELL:-mllvm -cce-aicore-addr-transform"
     "SHELL:-mllvm -cce-aicore-dcci-insert-for-scalar=false"
 )
