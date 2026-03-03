@@ -577,7 +577,7 @@ void mlir::pto::MakeTensorViewOp::print(OpAsmPrinter &p) {
   p << "]";
 
   p.printOptionalAttrDict((*this)->getAttrs(),
-                        /*elidedAttrs=*/{"operandSegmentSizes", "layout"});
+                        /*elidedAttrs=*/{"operandSegmentSizes"});
 
   p << " : " << getResult().getType();
 }

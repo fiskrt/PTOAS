@@ -622,6 +622,9 @@ struct PTOViewToMemrefPass
         if (foldedAddPtr) {
           rc->setAttr("pto.addptr_trace", rewriter.getUnitAttr());
         }
+        if (auto layoutAttr = op.getLayoutAttr()) {
+          rc->setAttr("layout", layoutAttr);
+        }
 
         rewriter.replaceOp(op, rc.getResult());
       }
@@ -832,6 +835,11 @@ struct PTOViewToMemrefPass
             mixedSizes, 
             mixedStrides
         );
+        if (Operation *srcDef = src.getDefiningOp()) {
+          if (auto layoutAttr = srcDef->getAttrOfType<pto::LayoutAttr>("layout")) {
+            sv->setAttr("layout", layoutAttr);
+          }
+        }
         
         rewriter.replaceOp(op, sv.getResult());
       }

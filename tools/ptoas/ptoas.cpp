@@ -640,9 +640,9 @@ int main(int argc, char **argv) {
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertLoadStoreForMixCVPass());
   pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
   
-  pm.addPass(pto::createPTOViewToMemrefPass());
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
+  pm.addPass(pto::createPTOViewToMemrefPass());
   // bufferizationPipeline(pm);
   //pm.addPass(createInferPTOMemScopePass());
 

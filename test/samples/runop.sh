@@ -313,6 +313,17 @@ process_one_dir() {
       fi
     fi
 
+    # Regression guard for Issue #174:
+    # Explicit layout on make_tensor_view must be preserved and reflected in the
+    # emitted GlobalTensor layout parameter.
+    if [[ "$base" == "tensor_view_layout_dn" ]]; then
+      if ! grep -Fq "pto::Layout::DN" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing pto::Layout::DN in emitted GlobalTensor"
+        overall=1
+        continue
+      fi
+    fi
+
     echo -e "${A}(${base}.py)\tOK\tgenerated: $(basename "$cpp")"
   done
 

@@ -2482,8 +2482,13 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
         if (!strToInt(finalShape[i], shapeInt[i]) || !strToInt(finalStride[i], strideInt[i]))
             allStatic = false;
     }
-    // 推导规则与 InferPTOLayout 保持一致
+    // 推导规则与 InferPTOLayout 保持一致。
+    //
+    // Note: Some shapes/strides may be ambiguous (e.g. dimensions of size 1),
+    // so we track whether the inference is reliable before validating against
+    // a user-specified `layout` attribute.
     int layoutTag = 0; // ND
+    bool inferredReliable = false;
     auto elemBytes = 4; // default float
     if (elemTypeStr.find("half") != std::string::npos || elemTypeStr.find("f16") != std::string::npos ||
         elemTypeStr.find("bf16") != std::string::npos)
@@ -2495,6 +2500,7 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
         if (shapeInt[2] == 16 && shapeInt[2] * shapeInt[3] * elemBytes == 512 &&
             strideInt[4] == 1 && strideInt[3] == shapeInt[4]) {
             layoutTag = 2; // NZ
+            inferredReliable = true;
         } else {
             bool isRow = strideInt[4] == 1;
             for (int i = 3; i >= 0; --i)
@@ -2502,11 +2508,18 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
             bool isCol = strideInt[0] == 1;
             for (int i = 0; i < 4; ++i)
                 isCol &= (strideInt[i + 1] == strideInt[i] * shapeInt[i]);
-            if (isCol) layoutTag = 1; // DN
-            else layoutTag = isRow ? 0 : 0; // fallback ND
+            if (isCol) {
+              layoutTag = 1; // DN
+              inferredReliable = true;
+            } else if (isRow) {
+              layoutTag = 0; // ND
+              inferredReliable = true;
+            } else {
+              layoutTag = 0; // fallback ND
+            }
         }
     }
-    // 若源 IR 上存在 layout 属性，则校验是否一致，不一致时报错
+    // 若源 IR 上存在 layout 属性：仅在推导结果可靠时校验一致性；否则直接采用用户指定值。
     if (auto attr = op->getAttrOfType<mlir::pto::LayoutAttr>("layout")) {
         int userTag = 0;
         switch (attr.getLayout()) {
@@ -2514,7 +2527,7 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
         case mlir::pto::Layout::DN: userTag = 1; break;
         case mlir::pto::Layout::NZ: userTag = 2; break;
         }
-        if (userTag != layoutTag) {
+        if (inferredReliable && userTag != layoutTag) {
             return rewriter.notifyMatchFailure(
                 op, "layout mismatch: user-specified layout=" +
                         std::string(attr.getLayout() == mlir::pto::Layout::ND ? "ND" :
