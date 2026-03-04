@@ -357,6 +357,16 @@ process_one_dir() {
       fi
     fi
 
+    # Regression guard for Issue #190:
+    # Infer layout for a 2D column-vector view (16 x 1) should prefer DN.
+    if [[ "$base" == "tensor_view_infer_layout_dn" ]]; then
+      if ! grep -Eq "pto::Shape<1, 1, 1, 16, 1>.*pto::Layout::DN" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\texpected pto::Layout::DN for shape (16 x 1) GlobalTensor"
+        overall=1
+        continue
+      fi
+    fi
+
     echo -e "${A}(${base}.py)\tOK\tgenerated: $(basename "$cpp")"
   done
 

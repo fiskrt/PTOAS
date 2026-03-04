@@ -100,7 +100,7 @@ static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
 static llvm::cl::opt<bool> disableInferLayout(
     "disable-infer-layout",
     llvm::cl::desc("Disable PTO layout inference pass (static-only)"),
-    llvm::cl::init(true)); // 默认关闭，需显式开启
+    llvm::cl::init(false));
 
 static llvm::cl::opt<bool> emitAddPtrTrace(
     "emit-addptr-trace",

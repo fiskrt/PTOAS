@@ -2472,76 +2472,66 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
     std::string shapeCppType = "pto::Shape<" + shapeParams + ">";
     std::string strideCppType = "pto::Stride<" + strideParams + ">";
 
-    // 3.0 计算推导出的 Layout；若用户已指定 layout，保持一致性校验
-    auto strToInt = [](const std::string &s, int64_t &out) -> bool {
+    // 3.0 Layout: prefer the attribute from InferPTOLayout; only fall back to
+    // local inference when the pass is disabled.
+    std::string layoutEnum = "pto::Layout::ND";
+    if (auto attr = op->getAttrOfType<mlir::pto::LayoutAttr>("layout")) {
+      switch (attr.getLayout()) {
+      case mlir::pto::Layout::ND:
+        layoutEnum = "pto::Layout::ND";
+        break;
+      case mlir::pto::Layout::DN:
+        layoutEnum = "pto::Layout::DN";
+        break;
+      case mlir::pto::Layout::NZ:
+        layoutEnum = "pto::Layout::NZ";
+        break;
+      }
+    } else {
+      auto strToInt = [](const std::string &s, int64_t &out) -> bool {
         return s != "-1" && llvm::to_integer(s, out);
-    };
-    SmallVector<int64_t, 5> shapeInt(5, -1), strideInt(5, -1);
-    bool allStatic = true;
-    for (int i = 0; i < 5; ++i) {
-        if (!strToInt(finalShape[i], shapeInt[i]) || !strToInt(finalStride[i], strideInt[i]))
-            allStatic = false;
-    }
-    // 推导规则与 InferPTOLayout 保持一致。
-    //
-    // Note: Some shapes/strides may be ambiguous (e.g. dimensions of size 1),
-    // so we track whether the inference is reliable before validating against
-    // a user-specified `layout` attribute.
-    int layoutTag = 0; // ND
-    bool inferredReliable = false;
-    auto elemBytes = 4; // default float
-    if (elemTypeStr.find("half") != std::string::npos || elemTypeStr.find("f16") != std::string::npos ||
-        elemTypeStr.find("bf16") != std::string::npos)
+      };
+      SmallVector<int64_t, 5> shapeInt(5, -1), strideInt(5, -1);
+      bool allStatic = true;
+      for (int i = 0; i < 5; ++i) {
+        if (!strToInt(finalShape[i], shapeInt[i]) ||
+            !strToInt(finalStride[i], strideInt[i]))
+          allStatic = false;
+      }
+
+      int layoutTag = 0; // ND
+      auto elemBytes = 4; // default float
+      if (elemTypeStr.find("half") != std::string::npos ||
+          elemTypeStr.find("f16") != std::string::npos ||
+          elemTypeStr.find("bf16") != std::string::npos)
         elemBytes = 2;
-    else if (elemTypeStr.find("double") != std::string::npos || elemTypeStr.find("f64") != std::string::npos)
+      else if (elemTypeStr.find("double") != std::string::npos ||
+               elemTypeStr.find("f64") != std::string::npos)
         elemBytes = 8;
-    if (allStatic) {
-        // NZ 判定
+
+      if (allStatic) {
         if (shapeInt[2] == 16 && shapeInt[2] * shapeInt[3] * elemBytes == 512 &&
             strideInt[4] == 1 && strideInt[3] == shapeInt[4]) {
-            layoutTag = 2; // NZ
-            inferredReliable = true;
+          layoutTag = 2; // NZ
         } else {
-            bool isRow = strideInt[4] == 1;
-            for (int i = 3; i >= 0; --i)
-                isRow &= (strideInt[i] == strideInt[i + 1] * shapeInt[i + 1]);
-            bool isCol = strideInt[0] == 1;
-            for (int i = 0; i < 4; ++i)
-                isCol &= (strideInt[i + 1] == strideInt[i] * shapeInt[i]);
-            if (isCol) {
-              layoutTag = 1; // DN
-              inferredReliable = true;
-            } else if (isRow) {
-              layoutTag = 0; // ND
-              inferredReliable = true;
-            } else {
-              layoutTag = 0; // fallback ND
-            }
+          bool isRow = strideInt[4] == 1;
+          for (int i = 3; i >= 0; --i)
+            isRow &= (strideInt[i] == strideInt[i + 1] * shapeInt[i + 1]);
+          bool isCol = strideInt[0] == 1;
+          for (int i = 0; i < 4; ++i)
+            isCol &= (strideInt[i + 1] == strideInt[i] * shapeInt[i]);
+          if (isCol)
+            layoutTag = 1; // DN
+          else
+            layoutTag = isRow ? 0 : 0; // fallback ND
         }
-    }
-    // 若源 IR 上存在 layout 属性：仅在推导结果可靠时校验一致性；否则直接采用用户指定值。
-    if (auto attr = op->getAttrOfType<mlir::pto::LayoutAttr>("layout")) {
-        int userTag = 0;
-        switch (attr.getLayout()) {
-        case mlir::pto::Layout::ND: userTag = 0; break;
-        case mlir::pto::Layout::DN: userTag = 1; break;
-        case mlir::pto::Layout::NZ: userTag = 2; break;
-        }
-        if (inferredReliable && userTag != layoutTag) {
-            return rewriter.notifyMatchFailure(
-                op, "layout mismatch: user-specified layout=" +
-                        std::string(attr.getLayout() == mlir::pto::Layout::ND ? "ND" :
-                                    attr.getLayout() == mlir::pto::Layout::DN ? "DN" : "NZ") +
-                        " but inferred layout tag=" + std::to_string(layoutTag));
-        }
-        layoutTag = userTag; // align with user
-    }
-    // 生成枚举字符串
-    std::string layoutEnum = "pto::Layout::ND";
-    if (layoutTag == 1)
+      }
+
+      if (layoutTag == 1)
         layoutEnum = "pto::Layout::DN";
-    else if (layoutTag == 2)
+      else if (layoutTag == 2)
         layoutEnum = "pto::Layout::NZ";
+    }
     // GlobalTensor takes a Layout non-type template parameter; directly use the
     // enum constant.
 
@@ -2731,37 +2721,57 @@ static Value buildGlobalTensorFromMemref(ConversionPatternRewriter &rewriter,
   rewriter.create<emitc::VerbatimOp>(
       loc, "using " + strideTypeName + " = pto::Stride<" + strideParams + ">;");
 
-  // Infer layout (same rules as Subview lowering)
-  SmallVector<int64_t, 5> shapeInt(5, -1), strideInt(5, -1);
-  for (int i = 0; i < 5; ++i) {
-    (void)llvm::to_integer(finalShape[i], shapeInt[i]);
-    (void)llvm::to_integer(finalStride[i], strideInt[i]);
-  }
-  int layoutTag = 0; // ND
-  int elemBytes = 4;
-  if (elemTypeStr.find("half") != std::string::npos ||
-      elemTypeStr.find("bf16") != std::string::npos)
-    elemBytes = 2;
-  else if (elemTypeStr.find("double") != std::string::npos)
-    elemBytes = 8;
-  if (shapeInt[2] == 16 && shapeInt[2] * shapeInt[3] * elemBytes == 512 &&
-      strideInt[4] == 1 && strideInt[3] == shapeInt[4]) {
-    layoutTag = 2; // NZ
-  } else {
-    bool isRow = strideInt[4] == 1;
-    for (int i = 3; i >= 0; --i)
-      isRow &= (strideInt[i] == strideInt[i + 1] * shapeInt[i + 1]);
-    bool isCol = strideInt[0] == 1;
-    for (int i = 0; i < 4; ++i)
-      isCol &= (strideInt[i + 1] == strideInt[i] * shapeInt[i]);
-    if (isCol) layoutTag = 1; // DN
-    else layoutTag = isRow ? 0 : 0; // fallback ND
-  }
+  // Layout: prefer the attribute from InferPTOLayout; only fall back to local
+  // inference when the pass is disabled.
   std::string layoutEnum = "pto::Layout::ND";
-  if (layoutTag == 1)
-    layoutEnum = "pto::Layout::DN";
-  else if (layoutTag == 2)
-    layoutEnum = "pto::Layout::NZ";
+  bool hasLayoutAttr = false;
+  if (anchor) {
+    if (auto attr = anchor->getAttrOfType<mlir::pto::LayoutAttr>("layout")) {
+      hasLayoutAttr = true;
+      switch (attr.getLayout()) {
+      case mlir::pto::Layout::ND:
+        layoutEnum = "pto::Layout::ND";
+        break;
+      case mlir::pto::Layout::DN:
+        layoutEnum = "pto::Layout::DN";
+        break;
+      case mlir::pto::Layout::NZ:
+        layoutEnum = "pto::Layout::NZ";
+        break;
+      }
+    }
+  }
+  if (!hasLayoutAttr) {
+    SmallVector<int64_t, 5> shapeInt(5, -1), strideInt(5, -1);
+    for (int i = 0; i < 5; ++i) {
+      (void)llvm::to_integer(finalShape[i], shapeInt[i]);
+      (void)llvm::to_integer(finalStride[i], strideInt[i]);
+    }
+    int layoutTag = 0; // ND
+    int elemBytes = 4;
+    if (elemTypeStr.find("half") != std::string::npos ||
+        elemTypeStr.find("bf16") != std::string::npos)
+      elemBytes = 2;
+    else if (elemTypeStr.find("double") != std::string::npos)
+      elemBytes = 8;
+    if (shapeInt[2] == 16 && shapeInt[2] * shapeInt[3] * elemBytes == 512 &&
+        strideInt[4] == 1 && strideInt[3] == shapeInt[4]) {
+      layoutTag = 2; // NZ
+    } else {
+      bool isRow = strideInt[4] == 1;
+      for (int i = 3; i >= 0; --i)
+        isRow &= (strideInt[i] == strideInt[i + 1] * shapeInt[i + 1]);
+      bool isCol = strideInt[0] == 1;
+      for (int i = 0; i < 4; ++i)
+        isCol &= (strideInt[i + 1] == strideInt[i] * shapeInt[i]);
+      if (isCol) layoutTag = 1; // DN
+      else layoutTag = isRow ? 0 : 0; // fallback ND
+    }
+    if (layoutTag == 1)
+      layoutEnum = "pto::Layout::DN";
+    else if (layoutTag == 2)
+      layoutEnum = "pto::Layout::NZ";
+  }
   std::string layoutConstName = gtTypeName + "_layout";
   rewriter.create<emitc::VerbatimOp>(
       loc, "constexpr pto::Layout " + layoutConstName + " = " + layoutEnum + ";");
