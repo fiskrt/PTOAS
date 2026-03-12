@@ -29,6 +29,7 @@
 #include "llvm/Support/FileSystem.h" // [Fix] Required for OF_None
 #include "ptobc/ptobc_decode.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/EmitC/Transforms/Passes.h"
@@ -292,6 +293,53 @@ static void dropEmptyEmitCExpressions(Operation *rootOp) {
   });
   for (emitc::ExpressionOp expr : llvm::reverse(toErase))
     expr.erase();
+}
+
+static Attribute getDefaultEmitCVariableInitAttr(OpBuilder &builder, Type type) {
+  if (auto intTy = dyn_cast<IntegerType>(type))
+    return builder.getIntegerAttr(intTy, 0);
+  if (isa<IndexType>(type))
+    return builder.getIndexAttr(0);
+  if (auto floatTy = dyn_cast<FloatType>(type))
+    return builder.getFloatAttr(floatTy, 0.0);
+  if (isa<emitc::OpaqueType, emitc::PointerType>(type))
+    return emitc::OpaqueAttr::get(builder.getContext(), "");
+  return Attribute{};
+}
+
+// FormExpressions may inline conditions into emitc.expression, but the C++
+// emitter prints cf.br/cf.cond_br operands by variable name rather than by
+// recursively emitting an expression. Materialize such operands so CFG-based
+// lowering (e.g. scf.while -> cf.*) stays valid.
+static void materializeControlFlowOperands(Operation *rootOp) {
+  llvm::SmallVector<Operation *, 16> branches;
+  rootOp->walk([&](Operation *op) {
+    if (isa<cf::BranchOp, cf::CondBranchOp>(op))
+      branches.push_back(op);
+  });
+
+  OpBuilder builder(rootOp->getContext());
+  for (Operation *op : branches) {
+    builder.setInsertionPoint(op);
+    for (OpOperand &operand : op->getOpOperands()) {
+      Value value = operand.get();
+      auto expr = dyn_cast_or_null<emitc::ExpressionOp>(value.getDefiningOp());
+      if (!expr)
+        continue;
+
+      Attribute initAttr =
+          getDefaultEmitCVariableInitAttr(builder, value.getType());
+      if (!initAttr)
+        continue;
+
+      Value tmp =
+          builder.create<emitc::VariableOp>(op->getLoc(), value.getType(),
+                                            initAttr)
+              .getResult();
+      builder.create<emitc::AssignOp>(op->getLoc(), tmp, value);
+      operand.set(tmp);
+    }
+  }
 }
 
 static bool rewriteMarkerCallToSubscript(std::string &cpp, llvm::StringRef marker,
@@ -704,10 +752,7 @@ int main(int argc, char **argv) {
   }
 
   dropEmptyEmitCExpressions(module.get());
-
-  // llvm::outs() << "\n===== EmitC IR (before translateToCpp) =====\n";
-  // module->print(llvm::outs());
-  // llvm::outs() << "\n===== End EmitC IR =====\n";
+  materializeControlFlowOperands(module.get());
 
   // Emit C++ to string, then post-process, then write to output file.
   std::string cppOutput;
@@ -720,6 +765,14 @@ int main(int argc, char **argv) {
     if (func.getBlocks().size() > 1) {
       declareVariablesAtTop = true;
       break;
+    }
+  }
+  if (!declareVariablesAtTop) {
+    for (auto func : module->getOps<emitc::FuncOp>()) {
+      if (func.getBlocks().size() > 1) {
+        declareVariablesAtTop = true;
+        break;
+      }
     }
   }
   if (failed(emitc::translateToCpp(*module, cppOS,
