@@ -2747,8 +2747,7 @@ mlir::LogicalResult mlir::pto::TExtractOp::verify() {
   auto hasMatExtractSourceLayoutA2A3 = [&](pto::TileBufType srcTy) -> bool {
     int32_t bl = srcTy.getBLayoutValueI32();
     int32_t sl = srcTy.getSLayoutValueI32();
-    return (bl == static_cast<int32_t>(pto::BLayout::RowMajor) &&
-            sl == static_cast<int32_t>(pto::SLayout::ColMajor)) ||
+    return bl == static_cast<int32_t>(pto::BLayout::RowMajor) ||
            (bl != static_cast<int32_t>(pto::BLayout::RowMajor) &&
             sl == static_cast<int32_t>(pto::SLayout::RowMajor));
   };

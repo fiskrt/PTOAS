@@ -5439,7 +5439,7 @@ dst[i, j] = src[i + indexRow, j + indexCol]
 
 - **Implementation checks (A2A3)**
   - `dst` element type must match `src` element type and must be one of: `i8`, `f16`, `bf16`, `f32`.
-  - Source layout/fractal must satisfy one of the target-supported combinations: `slayout=col_major` with `blayout=row_major`, or `slayout=row_major` with non-row-major base layout.
+  - Source layout/fractal must satisfy one of the target-supported combinations: `slayout=col_major` with `blayout=row_major`, or `slayout=row_major`.
   - Runtime bounds checks:
     - `indexRow + dst.rows <= src.rows`
     - `indexCol + dst.cols <= src.cols`
