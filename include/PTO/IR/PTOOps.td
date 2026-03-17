@@ -949,12 +949,18 @@ def TMovOp  : PTO_TOp<"tmov", [
         return ::mlir::pto::PIPE::PIPE_V;
       }
 
-      // MAT -> L0 (Left/Right/Bias/Scaling) and ACC -> MAT are MTE1 moves.
+      // MAT -> L0 (Left/Right/Bias/Scaling) are MTE1 moves.
       if ((s == ::mlir::pto::AddressSpace::MAT &&
            (d == ::mlir::pto::AddressSpace::LEFT || d == ::mlir::pto::AddressSpace::RIGHT ||
-            d == ::mlir::pto::AddressSpace::BIAS || d == ::mlir::pto::AddressSpace::SCALING)) ||
-          (s == ::mlir::pto::AddressSpace::ACC && d == ::mlir::pto::AddressSpace::MAT)) {
+            d == ::mlir::pto::AddressSpace::BIAS || d == ::mlir::pto::AddressSpace::SCALING))) {
         return ::mlir::pto::PIPE::PIPE_MTE1;
+      }
+
+      // ACC -> MAT uses FIX in PTO-ISA sync mapping (TMOV_A2M/TMOV_V2M class),
+      // and InsertSync relies on this pipe classification to generate the
+      // required M->FIX and FIX->MTE1 dependency edges.
+      if (s == ::mlir::pto::AddressSpace::ACC && d == ::mlir::pto::AddressSpace::MAT) {
+        return ::mlir::pto::PIPE::PIPE_FIX;
       }
 
       // Fallback: treat as vector pipe (safe default for most intra-domain moves).
