@@ -827,15 +827,9 @@ int main(int argc, char **argv) {
     pm.addPass(pto::createPlanMemoryPass(planMemoryOption));
   }
 
-  // Conditionally add Sync pass based on flag
-  if (enableInsertSync) {
-    if (effectiveLevel == PTOBuildLevel::Level3) {
-      llvm::errs()
-          << "Warning: --enable-insert-sync is ignored because --pto-level=level3.\n";
-    } else {
-      pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
-    }
-  }
+  // Conditionally add Sync pass based on flag.
+  if (enableInsertSync)
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
 
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveRedundantBarrierPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOHighDimLoweringPass());
