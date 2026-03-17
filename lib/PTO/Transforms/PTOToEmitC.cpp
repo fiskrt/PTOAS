@@ -3481,6 +3481,46 @@ struct CallToEmitC : public OpConversionPattern<func::CallOp> {
 // Sync lowering
 //===----------------------------------------------------------------------===
 
+static constexpr llvm::StringLiteral kAutoSyncTailBarrierAttr =
+    "pto.auto_sync_tail_barrier";
+static constexpr llvm::StringLiteral kAutoSyncTailHintAttr =
+    "pto.auto_sync_tail_hint";
+static constexpr llvm::StringLiteral kAutoSyncTailPolicyBarrierAll =
+    "barrier_all";
+static constexpr llvm::StringLiteral kAutoSyncTailPolicyMte3ToSEvent0 =
+    "setwait_mte3_to_s_event0";
+static constexpr llvm::StringLiteral kAutoSyncTailModeBarrierAllToken =
+    "PTOAutoSyncTailMode::kBarrierAll";
+static constexpr llvm::StringLiteral kAutoSyncTailModeMte3ToSEvent0Token =
+    "PTOAutoSyncTailMode::kSetWaitMte3ToSEvent0";
+
+static std::string getAutoSyncTailModeToken(Operation *op) {
+  if (op) {
+    if (auto hintAttr = op->getAttrOfType<StringAttr>(kAutoSyncTailHintAttr)) {
+      if (hintAttr.getValue() == kAutoSyncTailPolicyBarrierAll)
+        return kAutoSyncTailModeBarrierAllToken.str();
+      if (hintAttr.getValue() == kAutoSyncTailPolicyMte3ToSEvent0)
+        return kAutoSyncTailModeMte3ToSEvent0Token.str();
+    }
+  }
+
+  auto func = op ? op->getParentOfType<func::FuncOp>() : func::FuncOp();
+  if (!func)
+    return kAutoSyncTailModeBarrierAllToken.str();
+
+  auto hintAttr = func->getAttrOfType<StringAttr>(kAutoSyncTailHintAttr);
+  if (!hintAttr)
+    return kAutoSyncTailModeBarrierAllToken.str();
+
+  if (hintAttr.getValue() == kAutoSyncTailPolicyBarrierAll)
+    return kAutoSyncTailModeBarrierAllToken.str();
+  if (hintAttr.getValue() == kAutoSyncTailPolicyMte3ToSEvent0)
+    return kAutoSyncTailModeMte3ToSEvent0Token.str();
+
+  // Fallback to the conservative behavior when seeing unknown policies.
+  return kAutoSyncTailModeBarrierAllToken.str();
+}
+
 static std::string getPipeName(pto::PIPE pipe) {
   switch (pipe) {
     case pto::PIPE::PIPE_S: return "PIPE_S";
@@ -3510,6 +3550,15 @@ struct PTOBarrierToEmitC : public OpConversionPattern<pto::BarrierOp> {
   LogicalResult matchAndRewrite(pto::BarrierOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto *ctx = rewriter.getContext();
+
+    if (op->hasAttr(kAutoSyncTailBarrierAttr)) {
+      auto args = rewriter.getArrayAttr(
+          {emitc::OpaqueAttr::get(ctx, getAutoSyncTailModeToken(op))});
+      rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+          op, TypeRange{}, "ptoas_auto_sync_tail",
+          args, ArrayAttr{}, ValueRange{});
+      return success();
+    }
 
     // [FIX] op.getPipe() returns PipeAttr. 
     // We must call .getPipe() on the attribute to get the actual Enum value.
@@ -7718,6 +7767,27 @@ struct EmitPTOManualPass
 	        loc, builder.getStringAttr("pto/pto-inst.hpp"), /*isAngled=*/nullptr);
 	    builder.create<emitc::VerbatimOp>(
 	        loc, builder.getStringAttr("using namespace pto;"));
+	    builder.create<emitc::VerbatimOp>(
+	        loc, builder.getStringAttr(R"cpp(
+enum class PTOAutoSyncTailMode : int {
+  kBarrierAll = 0,
+  kSetWaitMte3ToSEvent0 = 1,
+};
+
+static inline void ptoas_auto_sync_tail(
+    PTOAutoSyncTailMode mode = PTOAutoSyncTailMode::kBarrierAll) {
+  switch (mode) {
+  case PTOAutoSyncTailMode::kSetWaitMte3ToSEvent0:
+    set_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
+    wait_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
+    break;
+  case PTOAutoSyncTailMode::kBarrierAll:
+  default:
+    pipe_barrier(PIPE_ALL);
+    break;
+  }
+}
+)cpp"));
 	
 	    // Only inject the bitcast helper when we actually lower ops that need it
 	    // (e.g. arith.bitcast or arith.maximumf/minimumf tie-breaking on zeros).

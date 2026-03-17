@@ -324,6 +324,27 @@ process_one_dir() {
       fi
     fi
 
+    # Regression guard for per-function auto tail hint:
+    # function attr `pto.auto_sync_tail_hint = "mte3-to-s-event0"` should
+    # select the lightweight tail sequence instead of PIPE_ALL barrier.
+    if [[ "$base" == "test_auto_sync_tail_hint" ]]; then
+      if ! grep -Fq "set_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing MTE3->S set_flag in tail helper"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "wait_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing MTE3->S wait_flag in tail helper"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "ptoas_auto_sync_tail(PTOAutoSyncTailMode::kSetWaitMte3ToSEvent0);" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\ttail call did not select kSetWaitMte3ToSEvent0"
+        overall=1
+        continue
+      fi
+    fi
+
     # Regression guard: intra-pipe dependencies must be serialized by a
     # per-pipe barrier (PyPTO expects `bar_v` / `bar_m` behavior).
     if [[ "$base" == "test_inject_sync_intra_pipe_barrier" ]]; then

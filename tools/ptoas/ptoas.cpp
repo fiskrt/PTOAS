@@ -272,6 +272,28 @@ static bool parseBuildLevel(llvm::StringRef levelStr, PTOBuildLevel &out) {
   return false;
 }
 
+static constexpr llvm::StringLiteral kAutoSyncTailPolicyBarrierAll =
+    "barrier_all";
+static constexpr llvm::StringLiteral kAutoSyncTailPolicyMte3ToSEvent0 =
+    "setwait_mte3_to_s_event0";
+
+static bool parseAutoSyncTailHint(llvm::StringRef hintStr, std::string &normalized) {
+  std::string s = hintStr.str();
+  for (char &c : s)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "barrier-all" || s == "barrier_all" || s == "default") {
+    normalized = kAutoSyncTailPolicyBarrierAll.str();
+    return true;
+  }
+  if (s == "mte3-to-s-event0" || s == "mte3_to_s_event0" ||
+      s == "setwait-mte3-to-s-event0" ||
+      s == "setwait_mte3_to_s_event0") {
+    normalized = kAutoSyncTailPolicyMte3ToSEvent0.str();
+    return true;
+  }
+  return false;
+}
+
 // --------------------------------------------------------------------------
 // Post-process C++ output: rewrite marker calls into Tile member calls.
 //
@@ -773,6 +795,28 @@ int main(int argc, char **argv) {
                  << "'. Expected 'level1', 'level2', or 'level3'.\n";
     return 1;
   }
+
+  bool invalidAutoSyncTailHint = false;
+  module->walk([&](mlir::func::FuncOp func) {
+    auto hintAttr =
+        func->getAttrOfType<mlir::StringAttr>("pto.auto_sync_tail_hint");
+    if (!hintAttr)
+      return;
+
+    std::string normalizedHint;
+    if (!parseAutoSyncTailHint(hintAttr.getValue(), normalizedHint)) {
+      func.emitError("invalid pto.auto_sync_tail_hint '")
+          << hintAttr.getValue()
+          << "'. Expected 'barrier-all' (or 'default') or "
+             "'mte3-to-s-event0'.";
+      invalidAutoSyncTailHint = true;
+      return;
+    }
+    func->setAttr("pto.auto_sync_tail_hint",
+                  mlir::StringAttr::get(&context, normalizedHint));
+  });
+  if (invalidAutoSyncTailHint)
+    return 1;
 
   if (effectiveLevel == PTOBuildLevel::Level3) {
     bool missing = false;

@@ -266,7 +266,20 @@ void SyncCodegen::CreateBarrierOp(IRRewriter &rewriter, Operation *op,
   }
  
   // 4. 创建指令
-  rewriter.create<pto::BarrierOp>(op->getLoc(), currentPipeAttr);
+  auto barrier =
+      rewriter.create<pto::BarrierOp>(op->getLoc(), currentPipeAttr);
+
+  // Mark the compiler-inserted function-tail PIPE_ALL barrier. EmitC lowering
+  // routes this to a dedicated inline epilogue helper to enable future,
+  // policy-driven lightweight tails without changing sync analysis.
+  if (sync->GetActualSrcPipe() == PipelineType::PIPE_ALL &&
+      sync->GetActualDstPipe() == PipelineType::PIPE_ALL) {
+    barrier->setAttr("pto.auto_sync_tail_barrier", rewriter.getUnitAttr());
+    if (auto hintAttr =
+            func_->getAttrOfType<mlir::StringAttr>("pto.auto_sync_tail_hint")) {
+      barrier->setAttr("pto.auto_sync_tail_hint", hintAttr);
+    }
+  }
 }
  
 void SyncCodegen::CreateSetWaitOpForSingleBuffer(IRRewriter &rewriter,
