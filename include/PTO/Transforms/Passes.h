@@ -60,7 +60,6 @@ std::unique_ptr<Pass> createInferPTOMemScopePass();
 std::unique_ptr<Pass>
 createPlanMemoryPass(const PlanMemoryOptions &planMemoryOption = {});
 
-std::unique_ptr<Pass> createPTOConvertToDPSPass();
 std::unique_ptr<Pass> createPTOViewToMemrefPass();
 std::unique_ptr<Pass> createInferPTOLayoutPass();
 // Declare register function

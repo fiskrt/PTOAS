@@ -827,7 +827,6 @@ int main(int argc, char **argv) {
   // Main PassManager
   PassManager pm(&context);
   
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOConvertToDPSPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTOLowerFrontendPipeOpsPass());
   pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVerifyTFreePass());

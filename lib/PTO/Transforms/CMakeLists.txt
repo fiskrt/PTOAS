@@ -1,5 +1,4 @@
 add_mlir_dialect_library(PTOTransforms
-  PTOConvertToDPS.cpp
   InsertSync/PTOInsertSync.cpp
   InsertSync/InsertSyncDebug.cpp
   PTOViewToMemref.cpp
