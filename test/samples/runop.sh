@@ -423,7 +423,7 @@ process_one_dir() {
       fi
     fi
     if [[ "$base" == "test_intercore_sync_a5" ]]; then
-      if ! grep -Fq "set_intra_block(PIPE_FIX, 5)" "$cpp"; then
+      if ! grep -Fq "set_intra_block(PIPE_MTE3, 5)" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.set lowering to set_intra_block"
         overall=1
         continue
