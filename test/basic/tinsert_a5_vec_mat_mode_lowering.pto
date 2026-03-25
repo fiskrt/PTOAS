@@ -24,8 +24,8 @@ module attributes {"pto.target_arch" = "a5"} {
   }
 }
 
-// CHECK-LABEL: __global__ AICORE void tinsert_vec_mat_nd(
-// CHECK: TINSERT<TInsertMode::ND>(
+// CHECK-LABEL: AICORE void tinsert_vec_mat_nd(
+// CHECK: TINSERT(
 
-// CHECK-LABEL: __global__ AICORE void tinsert_vec_mat_nz(
-// CHECK: TINSERT<TInsertMode::NZ>(
+// CHECK-LABEL: AICORE void tinsert_vec_mat_nz(
+// CHECK: TINSERT(

@@ -3041,6 +3041,10 @@ mlir::LogicalResult mlir::pto::TExtractOp::verify() {
       return ft.getWidth() == 8 || ft.isF16() || ft.isBF16() || ft.isF32();
     return false;
   };
+  auto isRowMajorNoneBoxND = [&](pto::TileBufType ty) -> bool {
+    return ty.getBLayoutValueI32() == static_cast<int32_t>(pto::BLayout::RowMajor) &&
+           ty.getSLayoutValueI32() == static_cast<int32_t>(pto::SLayout::NoneBox);
+  };
   auto verifyA2A3 = [&]() -> LogicalResult {
     Type srcTy = getSrc().getType();
     Type dstTy = getDst().getType();
@@ -3107,7 +3111,8 @@ mlir::LogicalResult mlir::pto::TExtractOp::verify() {
           *dstSpace == pto::AddressSpace::RIGHT ||
           *dstSpace == pto::AddressSpace::SCALING)) ||
         (*srcSpace == pto::AddressSpace::VEC &&
-         *dstSpace == pto::AddressSpace::MAT);
+         (*dstSpace == pto::AddressSpace::MAT ||
+          *dstSpace == pto::AddressSpace::VEC));
     if (!okPair)
       return emitOpError("expects A5 textract to use a supported src/dst loc pair");
     if (*srcSpace == pto::AddressSpace::MAT) {
@@ -3119,9 +3124,15 @@ mlir::LogicalResult mlir::pto::TExtractOp::verify() {
           return emitOpError("expects A5 left dst to use col_major blayout and row_major slayout");
       } else if (*dstSpace == pto::AddressSpace::RIGHT) {
         if (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
-            dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::ColMajor))
+          dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::ColMajor))
           return emitOpError("expects A5 right dst to use row_major blayout and col_major slayout");
       }
+    } else if (*srcSpace == pto::AddressSpace::VEC &&
+               *dstSpace == pto::AddressSpace::VEC) {
+      if (!isRowMajorNoneBoxND(srcTb) || !isRowMajorNoneBoxND(dstTb))
+        return emitOpError(
+            "expects A5 vec->vec textract src/dst to use ND layout "
+            "(blayout=row_major, slayout=none_box)");
     }
     return success();
   };

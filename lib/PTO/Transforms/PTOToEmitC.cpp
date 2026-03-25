@@ -5691,78 +5691,8 @@ struct PTOExtractToEmitC : public OpConversionPattern<pto::TExtractOp> {
 };
 //===----------------------------------------------------------------------===//
 // pto.tinsert lowering -> TINSERT(dst, src, indexRow, indexCol)
-// A5 specializations:
-//   vec->vec : TINSERT<TInsertMode::ND_VEC>(...)
-//   vec->mat : TINSERT<TInsertMode::ND/NZ>(...)
+// Keep lowering arch-agnostic and let PTO-ISA infer proper A5 path.
 //===----------------------------------------------------------------------===//
-
-static std::optional<pto::AddressSpace> getAddressSpaceFromType(Type ty) {
-  if (auto tb = dyn_cast<pto::TileBufType>(ty)) {
-    if (auto as = dyn_cast_or_null<pto::AddressSpaceAttr>(tb.getMemorySpace()))
-      return as.getAddressSpace();
-    return std::nullopt;
-  }
-  if (auto mr = dyn_cast<MemRefType>(ty)) {
-    if (auto ms = mr.getMemorySpace()) {
-      if (auto as = dyn_cast<pto::AddressSpaceAttr>(ms))
-        return as.getAddressSpace();
-      return std::nullopt;
-    }
-    return pto::AddressSpace::GM;
-  }
-  return std::nullopt;
-}
-
-static bool isA5TargetForTInsert(pto::TInsertOp op) {
-  auto moduleOp = op->getParentOfType<ModuleOp>();
-  if (!moduleOp)
-    return false;
-  if (auto arch = moduleOp->getAttrOfType<StringAttr>("pto.target_arch")) {
-    if (arch.getValue().equals_insensitive("a5"))
-      return true;
-  }
-  if (auto spec = moduleOp->getAttrOfType<StringAttr>("pto.device-spec")) {
-    auto s = spec.getValue();
-    if (s.starts_with("Ascend950") || s.starts_with("Ascend910_95"))
-      return true;
-  }
-  return false;
-}
-
-static std::optional<StringRef> getA5TInsertModeToken(pto::TInsertOp op) {
-  if (!isA5TargetForTInsert(op))
-    return std::nullopt;
-  auto srcAs = getAddressSpaceFromType(op.getSrc().getType());
-  auto dstAs = getAddressSpaceFromType(op.getDst().getType());
-  if (!srcAs || !dstAs)
-    return std::nullopt;
-  if (*srcAs == pto::AddressSpace::VEC && *dstAs == pto::AddressSpace::VEC)
-    return StringRef("TInsertMode::ND_VEC");
-  if (*srcAs == pto::AddressSpace::VEC && *dstAs == pto::AddressSpace::MAT) {
-    if (auto srcTb = dyn_cast<pto::TileBufType>(op.getSrc().getType())) {
-      int32_t bl = srcTb.getBLayoutValueI32();
-      int32_t sl = srcTb.getSLayoutValueI32();
-      bool srcIsND = bl == static_cast<int32_t>(pto::BLayout::RowMajor) &&
-                     sl == static_cast<int32_t>(pto::SLayout::NoneBox);
-      return srcIsND ? StringRef("TInsertMode::ND") : StringRef("TInsertMode::NZ");
-    }
-    // Best effort for memref path: recover from paired tload's layout attr.
-    for (Operation *user : op.getSrc().getUsers()) {
-      auto tload = dyn_cast<pto::TLoadOp>(user);
-      if (!tload || tload.getDst() != op.getSrc())
-        continue;
-      auto layoutAttr = tload->getAttrOfType<pto::LayoutAttr>("layout");
-      if (!layoutAttr)
-        continue;
-      return layoutAttr.getLayout() == pto::Layout::ND
-                 ? StringRef("TInsertMode::ND")
-                 : StringRef("TInsertMode::NZ");
-    }
-    // MemRef source loses explicit tile layout metadata; keep legacy default.
-    return StringRef("TInsertMode::NZ");
-  }
-  return std::nullopt;
-}
 
 struct PTOInsertToEmitC : public OpConversionPattern<pto::TInsertOp> {
   using OpConversionPattern<pto::TInsertOp>::OpConversionPattern;
@@ -5770,22 +5700,15 @@ struct PTOInsertToEmitC : public OpConversionPattern<pto::TInsertOp> {
   LogicalResult matchAndRewrite(pto::TInsertOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    auto *ctx = rewriter.getContext();
 
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
     Value r0  = peelUnrealized(adaptor.getIndexRow());
     Value c0  = peelUnrealized(adaptor.getIndexCol());
 
-    ArrayAttr templateArgs = ArrayAttr{};
-    if (auto modeTok = getA5TInsertModeToken(op)) {
-      templateArgs = rewriter.getArrayAttr(
-          {emitc::OpaqueAttr::get(ctx, modeTok->str())});
-    }
-
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TINSERT",
-        /*args=*/ArrayAttr{}, /*templateArgs=*/templateArgs,
+        /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
         /*operands=*/ValueRange{dst, src, r0, c0});
 
     rewriter.eraseOp(op);
