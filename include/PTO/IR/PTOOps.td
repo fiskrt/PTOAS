@@ -2638,9 +2638,61 @@ def TExtractOp : PTO_TOp<"textract", [
   }];
 
   let extraClassDeclaration = [{
-    // TEXTRACT moves data between memory domains (L1/cbuf -> L0A/L0B/L0C),
-    // which is executed by the MTE1 pipeline.
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_MTE1; }
+    ::mlir::pto::PIPE getPipe() {
+      // Align with pto-isa TEXTRACT op classes:
+      //   - TEXTRACT_M2LR : MAT -> LEFT/RIGHT (MTE1)
+      //   - TEXTRACT_V2M  : VEC -> MAT       (FIX)
+      //   - TEXTRACT_A2M  : ACC -> MAT       (FIX)
+      // For pure UB slices (VEC -> VEC), treat as vector pipe.
+      auto getASFromType = [](Type ty)
+          -> std::optional<::mlir::pto::AddressSpace> {
+        if (auto tb = llvm::dyn_cast<::mlir::pto::TileBufType>(ty)) {
+          if (auto as = llvm::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
+                  tb.getMemorySpace()))
+            return as.getAddressSpace();
+          return std::nullopt;
+        }
+        if (auto mr = llvm::dyn_cast<::mlir::MemRefType>(ty)) {
+          if (auto ms = mr.getMemorySpace()) {
+            if (auto as =
+                    llvm::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
+              return as.getAddressSpace();
+          }
+          return std::nullopt;
+        }
+        return std::nullopt;
+      };
+
+      auto sOpt = getASFromType(getSrc().getType());
+      auto dOpt = getASFromType(getDst().getType());
+      if (!sOpt.has_value() || !dOpt.has_value())
+        return ::mlir::pto::PIPE::PIPE_V;
+
+      const auto s = sOpt.value();
+      const auto d = dOpt.value();
+
+      if (s == ::mlir::pto::AddressSpace::MAT &&
+          (d == ::mlir::pto::AddressSpace::LEFT ||
+           d == ::mlir::pto::AddressSpace::RIGHT ||
+           d == ::mlir::pto::AddressSpace::BIAS)) {
+        return ::mlir::pto::PIPE::PIPE_MTE1;
+      }
+
+      if ((s == ::mlir::pto::AddressSpace::VEC &&
+           d == ::mlir::pto::AddressSpace::MAT) ||
+          (s == ::mlir::pto::AddressSpace::ACC &&
+           d == ::mlir::pto::AddressSpace::MAT)) {
+        return ::mlir::pto::PIPE::PIPE_FIX;
+      }
+
+      if (s == ::mlir::pto::AddressSpace::VEC &&
+          d == ::mlir::pto::AddressSpace::VEC) {
+        return ::mlir::pto::PIPE::PIPE_V;
+      }
+
+      // Default to vector pipe for unmatched combinations.
+      return ::mlir::pto::PIPE::PIPE_V;
+    }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }
@@ -3550,7 +3602,8 @@ def TReshapeOp: PTO_TOp<"treshape", [
   let assemblyFormat = "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
 
   let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    // Keep consistent with pto-isa opPipeList: TRESHAPE is modeled on PIPE_S.
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_S; }
     ::mlir::Value getViewSource() { return getSrc(); }
   }];
 }
