@@ -97,6 +97,7 @@ python3 test/npu_validation/scripts/generate_testcase.py \
 
 cd /tmp/ptoas_compile_only/Addc/addc
 cmake -S . -B build \
+  -DENABLE_SIM_GOLDEN=OFF \
   -DSOC_VERSION=Ascend910 \
   -DPTO_ISA_ROOT=$PTO_ISA_ROOT
 cmake --build build --parallel
@@ -122,6 +123,7 @@ python3 test/npu_validation/scripts/generate_testcase.py \
 
 cd /tmp/ptoas_compile_only_a5/Sync/test_a5_buf_sync
 cmake -S . -B build \
+  -DENABLE_SIM_GOLDEN=OFF \
   -DSOC_VERSION=Ascend950 \
   -DPTO_ISA_ROOT=$PTO_ISA_ROOT
 cmake --build build --parallel
@@ -186,6 +188,15 @@ export PYTHONPATH="$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core:$PTO_INS
 export LD_LIBRARY_PATH="$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:${LD_LIBRARY_PATH:-}"
 
 bash test/samples/runop.sh --enablebc all
+
+# `runop.sh` 对 Sync 目录下 direct `.pto` regression case 的输出命名为 `*.cpp`，
+# 但批量验证脚本只扫描 `*-pto.cpp`。这里额外复制一份带 `-pto` 后缀的文件，
+# 以便后续 compile-only 流程覆盖这些 direct `.pto` 用例。
+for f in "$PAYLOAD_ROOT"/test/samples/Sync/*.cpp; do
+  [[ -f "$f" ]] || continue
+  [[ "$f" == *-pto.cpp ]] && continue
+  cp "$f" "${f%.cpp}-pto.cpp"
+done
 ```
 
 ### 4.2 批量执行 compile-only
@@ -197,12 +208,16 @@ bash test/samples/runop.sh --enablebc all
 cd "$PAYLOAD_ROOT"
 export STAGE=build
 export RUN_MODE=npu
+export GOLDEN_MODE=skip
 export SOC_VERSION=Ascend910
 export PTO_ISA_REPO=https://gitcode.com/cann/pto-isa.git
 export PTO_ISA_COMMIT=<与 CI 对齐的 commit>
 
 bash ./test/npu_validation/scripts/run_remote_npu_validation.sh
 ```
+
+这里显式设置 `GOLDEN_MODE=skip`，脚本会向 CMake 传递
+`-DENABLE_SIM_GOLDEN=OFF`，因此不会构建 `_sim` 目标，也不依赖 simulator 组件。
 
 如果本地已经有 vendored 的 `pto-isa/` 目录，也可以不走网络 clone，脚本会优先使用本地目录。
 
