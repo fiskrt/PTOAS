@@ -73,6 +73,10 @@ struct ShapeStride5D {
   SmallVector<int64_t, 5> stride;
 };
 
+static bool isMinor2DLayout(Layout layout) {
+  return layout == Layout::ND || layout == Layout::DN;
+}
+
 static std::optional<ShapeStride5D> rightAlignTo5D(ArrayRef<int64_t> shape,
                                                    ArrayRef<int64_t> stride) {
   if (shape.size() != stride.size())
@@ -331,11 +335,16 @@ struct InferPTOLayoutPass
       }
     };
 
-    auto verifyOrSetLayout = [&](Operation *op,
-                                 std::optional<Layout> inferred) -> void {
+    auto verifyOrSetLayout = [&](Operation *op, std::optional<Layout> inferred,
+                                 bool isMinor2DAmbiguous = false) -> void {
       auto existing = op->getAttrOfType<LayoutAttr>(kLayoutAttrName);
       if (existing) {
         if (inferred && existing.getLayout() != *inferred) {
+          // For minor-2D ambiguous cases, ND/DN are both legal and should be
+          // treated as equivalent ABI hints. Keep user-specified layout.
+          if (isMinor2DAmbiguous && isMinor2DLayout(existing.getLayout()) &&
+              isMinor2DLayout(*inferred))
+            return;
           op->emitError() << "layout mismatch: user-specified layout="
                           << stringifyLayout(existing.getLayout())
                           << " but inferred=" << stringifyLayout(*inferred);
@@ -370,7 +379,7 @@ struct InferPTOLayoutPass
           elemByteSize(cast<TensorViewType>(op.getResult().getType())
                            .getElementType()),
           preferredForAmbiguous, &isAmbiguous);
-      verifyOrSetLayout(op.getOperation(), inferred);
+      verifyOrSetLayout(op.getOperation(), inferred, isAmbiguous);
 
       // If this make_tensor_view layout was inferred in an ambiguous ND/DN
       // shape and a downstream tile has a clear BLayout preference, force-align
@@ -419,9 +428,11 @@ struct InferPTOLayoutPass
         strides.push_back(*v);
       }
 
-      verifyOrSetLayout(
-          op.getOperation(),
-          inferLayout5D(shape, strides, elemByteSize(mrTy.getElementType())));
+      bool isMinor2DAmbiguous = false;
+      auto inferred =
+          inferLayout5D(shape, strides, elemByteSize(mrTy.getElementType()),
+                        std::nullopt, &isMinor2DAmbiguous);
+      verifyOrSetLayout(op.getOperation(), inferred, isMinor2DAmbiguous);
     });
 
     // ------------------------------------------------------------------
