@@ -241,15 +241,16 @@ pto.tfree_from_aiv { split = 0 }
 
 ### 4.1 逻辑 pipe
 
-本文中的“逻辑 pipe”指一条单向通信通道。
+本文中的”逻辑 pipe”指一条通信通道。
 
 - C2V：Cube producer -> Vector consumer
 - V2C：Vector producer -> Cube consumer
 
-`DIR_MASK=3` 表示前端一个同时包含 C2V 和 V2C 的初始化请求，在 PTOAS lowering 后拆成两条单向逻辑 pipe：
-
-- 一条 `dir_mask = 1` 的 C2V pipe
-- 一条 `dir_mask = 2` 的 V2C pipe
+`DIR_MASK=3` 表示前端一个同时包含 C2V 和 V2C 的初始化请求。在 PTOAS lowering
+后，生成单条 `dir_mask = 3` 的 DIR_BOTH 内部 pipe，同时承载 C2V 和 V2C 双向
+通信。该 pipe 携带两个地址操作数：`local_addr`（C2V consumer buf）和
+`peer_local_addr`（V2C consumer buf）。下游 TPUSH/TPOP/TFREE 共享同一 pipe
+handle。
 
 ### 4.2 `split` 的角色
 
@@ -288,7 +289,7 @@ pto.tfree_from_aiv { split = 0 }
 `SLOT_NUM` 由 `DIR_MASK` 固定决定：
 
 - `DIR_MASK = 1` 或 `2`：`SLOT_NUM = 8`
-- `DIR_MASK = 3`：拆成两条单向 pipe，且每条 `SLOT_NUM = 4`
+- `DIR_MASK = 3`（DIR_BOTH）：单条 pipe，`SLOT_NUM = 4`（每方向 4 slot，总缓冲 2 × 4 × SLOT_SIZE）
 
 `SLOT_NUM` 不由 `split` 决定。
 
@@ -306,13 +307,26 @@ pto.tfree_from_aiv { split = 0 }
 
 用于 A2/A3 路径。
 
+单向示例：
+
 ```mlir
 %pipe = pto.initialize_l2g2l_pipe {
     dir_mask = 1,
     slot_size = 512,
     slot_num = 8,
     local_slot_num = 8
-}(%gm_addr, %local_addr) -> !pto.pipe
+}(%gm_addr : i32, %local_addr : i32) -> !pto.pipe
+```
+
+DIR_BOTH 示例：
+
+```mlir
+%pipe = pto.initialize_l2g2l_pipe {
+    dir_mask = 3,
+    slot_size = 512,
+    slot_num = 4,
+    local_slot_num = 4
+}(%gm_addr : i32, %c2v_addr : i32, %v2c_addr : i32) -> !pto.pipe
 ```
 
 #### 必需属性
@@ -327,10 +341,10 @@ pto.tfree_from_aiv { split = 0 }
   - 仅 `initialize_l2g2l_pipe` 承载
   - 表示 GM 路径下 consumer 侧 local slot buffer 的槽数
   - 仅在通过 GM 传递时对底层 `TPipe` 模板参数有意义，不改变 GM FIFO 的 `slot_num`
-  - 缺省值等于该内部单向 pipe 的 `slot_num`
+  - 缺省值等于该内部 pipe 的 `slot_num`
   - 因此当前固定规则下：
     - `DIR_MASK=1/2` 直接 lowering 时，`local_slot_num = 8`
-    - `DIR_MASK=3` 拆成两条单向 pipe 后，每条 `local_slot_num = 4`
+    - `DIR_MASK=3` 单条 DIR_BOTH pipe，`local_slot_num = 4`
 - `flag_base`
   - 由 PTOAS flag 分配阶段填写
   - frontend lowering 阶段可以缺省
@@ -339,23 +353,36 @@ pto.tfree_from_aiv { split = 0 }
 #### 操作数
 
 - `gm_addr`
-- `local_addr`
+- `local_addr`：C2V consumer buf（或单向时唯一方向的 consumer buf）
+- `peer_local_addr`（可选）：V2C consumer buf，仅 `dir_mask = 3` 时出现
 
 ### 5.3 `pto.initialize_l2l_pipe`
 
 用于 A5 路径。
+
+单向示例：
 
 ```mlir
 %pipe = pto.initialize_l2l_pipe {
     dir_mask = 1,
     slot_size = 512,
     slot_num = 8
-}(%local_addr) -> !pto.pipe
+}(%local_addr : i32) -> !pto.pipe
+```
+
+双向（DIR_BOTH）示例：
+
+```mlir
+%pipe = pto.initialize_l2l_pipe {
+    dir_mask = 3,
+    slot_size = 1024,
+    slot_num = 4
+}(%c2v_addr : i32, %v2c_addr : i32) -> !pto.pipe
 ```
 
 #### 必需属性
 
-- `dir_mask`
+- `dir_mask`：合法值 `1`（C2V）、`2`（V2C）、`3`（DIR_BOTH）
 - `slot_size`
 - `slot_num`
 
@@ -365,6 +392,11 @@ pto.tfree_from_aiv { split = 0 }
   - 由 PTOAS flag 分配阶段填写
   - frontend lowering 阶段可以缺省
   - EmitC 前必须已经解析为显式常量
+
+#### 操作数
+
+- `local_addr`：C2V consumer buf（或单向时唯一方向的 consumer buf）
+- `peer_local_addr`（可选）：V2C consumer buf，仅 `dir_mask = 3` 时出现
 
 #### 操作数
 
@@ -417,20 +449,17 @@ pto.tfree(%pipe) { split = 0 }
 
 ### 6.3 `DIR_MASK=3`
 
-前端一个 init op 固定拆成两条内部 pipe：
+前端一个 init op 生成**单条** DIR_BOTH 内部 pipe：
 
-- `%pipe_c2v`：`dir_mask = 1`，`slot_num = 4`
-- `%pipe_v2c`：`dir_mask = 2`，`slot_num = 4`
-
-若 lowering 为 `initialize_l2g2l_pipe`，则两条内部 pipe 还满足：
-
-- `%pipe_c2v`：`local_slot_num = 4`
-- `%pipe_v2c`：`local_slot_num = 4`
+- `%pipe`：`dir_mask = 3`，`slot_num = 4`
+- 若 lowering 为 `initialize_l2g2l_pipe`，`local_slot_num = 4`
 
 地址选择规则：
 
-- `%pipe_c2v` 使用 `C2V_CONSUMER_BUF`
-- `%pipe_v2c` 使用 `V2C_CONSUMER_BUF`
+- `local_addr` = `C2V_CONSUMER_BUF`
+- `peer_local_addr` = `V2C_CONSUMER_BUF`
+
+`FrontendPipeHandles` 中 `c2vPipe` 和 `v2cPipe` 指向同一个 pipe Value。
 
 ### 6.4 前端数据传输 op 与内部 pipe 的绑定
 
@@ -438,10 +467,12 @@ pto.tfree(%pipe) { split = 0 }
 
 | 前端 op | 所在函数 | 方向 | 使用的内部 pipe |
 |---|---|---|---|
-| `tpush_to_aiv` | Cube | C2V | `dir_mask = 1` |
-| `tpop_from_aic` | Vector | C2V | `dir_mask = 1` |
-| `tfree_from_aic` | Vector | C2V | `dir_mask = 1` |
-| `tpush_to_aic` | Vector | V2C | `dir_mask = 2` |
+| `tpush_to_aiv` | Cube | C2V | `c2vPipe` |
+| `tpop_from_aic` | Vector | C2V | `c2vPipe` |
+| `tfree_from_aic` | Vector | C2V | `c2vPipe` |
+| `tpush_to_aic` | Vector | V2C | `v2cPipe` |
+
+当 `DIR_MASK=3` 时，`c2vPipe` 和 `v2cPipe` 指向同一个 DIR_BOTH pipe，下游 TPUSH/TPOP/TFREE 只关心 pipe handle 是否存在，不关心是否是同一个。
 | `tpop_from_aiv` | Cube | V2C | `dir_mask = 2` |
 | `tfree_from_aiv` | Cube | V2C | `dir_mask = 2` |
 
@@ -602,8 +633,9 @@ pass 在模块级按两步执行：
 其中第一步的实现方式是：
 
 - 遍历模块内所有 `pto.initialize_l2l_pipe` / `pto.initialize_l2g2l_pipe`
-- 若其 `local_addr` 来自 `reserve_buffer`，则以“当前函数 + reserve 名字 + dir_mask”识别逻辑 pipe
-- 若其 `local_addr` 来自 `import_reserved_buffer`，则以“peer_func + reserve 名字 + dir_mask”识别逻辑 pipe
+- 对每条 init op 的每个地址操作数，以”函数 + reserve 名字 + 方向”构建 PipePeerKey 并归入逻辑 pipe 分组：
+  - `dir_mask = 1/2`：只有 `local_addr`，方向即 `dir_mask`
+  - `dir_mask = 3`（DIR_BOTH）：一条 pipe 携带两个地址，分别归入两个逻辑方向——`local_addr` 归入 C2V（方向 1），`peer_local_addr` 归入 V2C（方向 2）
 - 将 peer 两侧引用到同一逻辑 pipe 的内部 init op 归并到同一组
 - 若某条 init 未显式提供 `flag_base`，则其 `local_addr` 必须来自 `reserve_buffer` 或 `import_reserved_buffer`
 - 对每个逻辑 pipe 分组，要求必须形成完整 peer init pair：恰好两条 init，且分别来自 peer 两侧函数；若 peer 信息不完整则直接报错
@@ -611,7 +643,7 @@ pass 在模块级按两步执行：
 - 若同组两侧都未显式提供 `flag_base`，则按默认规则回填：
   - 单向场景：`flag_base = 0`
   - 双向场景：C2V 组 `flag_base = 0`，V2C 组 `flag_base = 2`
-- 所谓“双向场景”，是指同一对 peer 函数之间同时存在 `dir_mask = 1` 和 `dir_mask = 2` 两个逻辑 pipe 分组
+- “双向场景”指同一对 peer 函数之间同时存在 C2V 和 V2C 两个逻辑 pipe 分组；DIR_BOTH 的一条物理 pipe 天然产生这两个分组
 - 完成分组决策后，将最终 `flag_base` 回填到该组内所有尚未显式填写的 init op，保证 peer 两侧一致
 
 第二步的实现方式是：
@@ -663,15 +695,17 @@ pass 在模块级按两步执行：
 
 ### 8.3 双向场景
 
-当前规划中，当 `DIR_MASK = 3` 时，可采用：
+当前规划中，当 `DIR_MASK = 3`（DIR_BOTH）时，虽然物理上只有一条 pipe，但 resolve pass 将其拆为两个逻辑方向分别分配 `flag_base`：
 
-- C2V pipe：`flag_base = 0`
-- V2C pipe：`flag_base = 2`
+- C2V 方向：`flag_base = 0`
+- V2C 方向：`flag_base = 2`
 
 因此双向固定占用两组逻辑 flag：
 
 - C2V：`0` / `1`
 - V2C：`2` / `3`
+
+对于单条 DIR_BOTH pipe，最终 `flag_base` 取 C2V 方向的值（`0`），底层 pto-isa `TPipe<flagBase, Direction::DIR_BOTH, ...>` 会自动管理两个方向的 flag 对。
 
 ### 8.4 与地址传播的关系
 
@@ -758,10 +792,21 @@ EmitC 将以下内部 init op 映射到底层 `TPipe`：
 - `dir_mask`
 - `slot_size`
 - `slot_num`
-- `local_slot_num`
+- `local_slot_num`（仅 `initialize_l2g2l_pipe`）
 - `flag_base`
-- `gm_addr`
+- `gm_addr`（仅 `initialize_l2g2l_pipe`）
 - `local_addr`
+- `peer_local_addr`（仅 `dir_mask = 3` 时）
+
+`dir_mask` 到 `Direction` 枚举的映射：
+
+| `dir_mask` | `Direction` 令牌 |
+|---|---|
+| 1 | `Direction::DIR_C2V` |
+| 2 | `Direction::DIR_V2C` |
+| 3 | `Direction::DIR_BOTH` |
+
+当 `dir_mask = 3` 时，EmitC 将 `local_addr` 作为 C2V consumer buf、`peer_local_addr` 作为 V2C consumer buf 传入 `TPipe` 构造函数。
 
 其中：
 

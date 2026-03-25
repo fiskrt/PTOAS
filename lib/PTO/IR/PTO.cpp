@@ -7827,8 +7827,8 @@ static LogicalResult verifyFrontendSplitOp(Operation *op,
 static LogicalResult verifyPipeShape(Operation *op, int8_t dirMask, int32_t slotSize,
                                      int32_t slotNum,
                                      std::optional<int32_t> flagBase) {
-  if (dirMask != 1 && dirMask != 2)
-    return op->emitOpError("expects 'dir_mask' to be 1 or 2");
+  if (dirMask != 1 && dirMask != 2 && dirMask != 3)
+    return op->emitOpError("expects 'dir_mask' to be 1, 2, or 3");
   if (slotSize <= 0)
     return op->emitOpError("expects 'slot_size' to be greater than 0");
   if (slotNum != 4 && slotNum != 8)
@@ -7906,15 +7906,26 @@ LogicalResult InitializeL2G2LPipeOp::verify() {
           "expects 'local_slot_num' to be less than or equal to slot_num");
   }
 
+  if (getDirMask() == 3 && !getPeerLocalAddr())
+    return emitOpError("expects 'peer_local_addr' when dir_mask is 3");
+  if (getDirMask() != 3 && getPeerLocalAddr())
+    return emitOpError("'peer_local_addr' is only allowed when dir_mask is 3");
   return success();
 }
 
 LogicalResult InitializeL2LPipeOp::verify() {
-  return verifyPipeShape(getOperation(), getDirMask(), getSlotSize(),
-                         getSlotNum(),
-                         getFlagBaseAttr()
-                             ? std::optional<int32_t>(getFlagBaseAttr().getInt())
-                             : std::nullopt);
+  if (failed(verifyPipeShape(getOperation(), getDirMask(), getSlotSize(),
+                              getSlotNum(),
+                              getFlagBaseAttr()
+                                  ? std::optional<int32_t>(getFlagBaseAttr().getInt())
+                                  : std::nullopt)))
+    return failure();
+
+  if (getDirMask() == 3 && !getPeerLocalAddr())
+    return emitOpError("expects 'peer_local_addr' when dir_mask is 3");
+  if (getDirMask() != 3 && getPeerLocalAddr())
+    return emitOpError("'peer_local_addr' is only allowed when dir_mask is 3");
+  return success();
 }
 
 LogicalResult TPushOp::verify() {

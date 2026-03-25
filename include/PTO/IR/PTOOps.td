@@ -1382,7 +1382,8 @@ def InitializeL2G2LPipeOp : PTO_Op<"initialize_l2g2l_pipe", [
       OptionalAttr<I32Attr>:$local_slot_num,
       OptionalAttr<I32Attr>:$flag_base,
       AnyType:$gm_addr,
-      AnyType:$local_addr
+      AnyType:$local_addr,
+      Optional<AnyType>:$peer_local_addr
   );
 
   let results = (outs PipeType:$pipe);
@@ -1395,7 +1396,8 @@ def InitializeL2G2LPipeOp : PTO_Op<"initialize_l2g2l_pipe", [
         (`,` `local_slot_num` `=` $local_slot_num^)?
         (`,` `flag_base` `=` $flag_base^)?
         `}`
-    `(` $gm_addr `:` type($gm_addr) `,` $local_addr `:` type($local_addr) `)`
+    `(` $gm_addr `:` type($gm_addr) `,` $local_addr `:` type($local_addr)
+        (`,` $peer_local_addr^ `:` type($peer_local_addr))? `)`
     attr-dict `->` qualified(type($pipe))
   }];
 }
@@ -1410,7 +1412,8 @@ def InitializeL2LPipeOp : PTO_Op<"initialize_l2l_pipe", [
       I32Attr:$slot_size,
       I32Attr:$slot_num,
       OptionalAttr<I32Attr>:$flag_base,
-      AnyType:$local_addr
+      AnyType:$local_addr,
+      Optional<AnyType>:$peer_local_addr
   );
 
   let results = (outs PipeType:$pipe);
@@ -1422,7 +1425,8 @@ def InitializeL2LPipeOp : PTO_Op<"initialize_l2l_pipe", [
         `slot_num` `=` $slot_num
         (`,` `flag_base` `=` $flag_base^)?
         `}`
-    `(` $local_addr `:` type($local_addr) `)`
+    `(` $local_addr `:` type($local_addr)
+        (`,` $peer_local_addr^ `:` type($peer_local_addr))? `)`
     attr-dict `->` qualified(type($pipe))
   }];
 }
@@ -1485,6 +1489,22 @@ def DeclareTileOp : PTO_Op<"declare_tile", [Pure]> {
 
   let assemblyFormat = [{
     attr-dict `->` qualified(type($tile))
+  }];
+}
+
+def DeclareTileMemRefOp : PTO_Op<"declare_tile_memref", [Pure]> {
+  let summary = "Internal memref placeholder for a tile whose address is assigned later";
+  let description = [{
+    Internal lowering op used by PTOViewToMemref. This op does not allocate
+    storage; it only provides a memref-typed SSA handle so later passes can
+    attach tile metadata through pto.bind_tile before the address is filled by
+    pipe operations such as pto.tpop.
+  }];
+
+  let results = (outs AnyMemRef:$result);
+
+  let assemblyFormat = [{
+    attr-dict `->` qualified(type($result))
   }];
 }
 
