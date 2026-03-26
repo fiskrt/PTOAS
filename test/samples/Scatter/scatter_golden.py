@@ -8,7 +8,7 @@ for search_root in (Path(__file__).resolve().parent, Path(__file__).resolve().pa
         sys.path.insert(0, str(search_root))
         break
 
-from validation_runtime import default_buffers, float_values, load_case_meta, rng, single_output, write_buffers, write_golden
+from validation_runtime import default_buffers, float_values, load_case_meta, matrix32, rng, single_output, write_buffers, write_golden
 
 
 def main():
@@ -17,14 +17,12 @@ def main():
     generator = rng()
     src_dtype = meta.np_types[src_name]
     src = float_values(generator, meta.elem_counts[src_name], style='signed').astype(src_dtype, copy=False)
-    rows = 32
-    cols = 64
+    src_2d = matrix32(src)
+    rows, cols = src_2d.shape
     row_dest = (np.arange(rows, dtype=np.int64) * 17) % rows
-    idx = np.zeros((rows, cols), dtype=np.int64)
-    for row in range(rows):
-        idx[row, :] = row_dest[row] * cols + np.arange(cols, dtype=np.int64)
+    idx = np.repeat(row_dest[:, None], cols, axis=1)
     out = np.zeros((rows, cols), dtype=src_dtype)
-    out[row_dest, :] = src.reshape(rows, cols)
+    out[row_dest, :] = src_2d
     buffers = default_buffers(meta)
     buffers[src_name] = src
     buffers[idx_name] = idx.astype(meta.np_types[idx_name], copy=False).reshape(-1)
