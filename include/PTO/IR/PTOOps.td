@@ -1507,7 +1507,7 @@ def DeclareEventIdArrayOp : PTO_Op<"declare_eventid_array"> {
   }];
 }
 
-def EventIdArrayGetOp : PTO_Op<"eventid_array_get", [Pure]> {
+def EventIdArrayGetOp : PTO_Op<"eventid_array_get"> {
   let summary = "Read one element from a manual event-id array";
 
   let arguments = (ins

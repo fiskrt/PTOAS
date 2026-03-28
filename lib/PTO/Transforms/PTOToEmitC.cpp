@@ -4727,10 +4727,9 @@ struct PTOEventIdArrayGetToEmitC
       return rewriter.notifyMatchFailure(op,
                                          "failed to map eventid_array get result type");
 
-    auto call = rewriter.create<emitc::CallOpaqueOp>(
-        op.getLoc(), TypeRange{resultTy}, "PTOAS__EVENTID_ARRAY_LOAD",
-        ArrayAttr{}, ArrayAttr{}, ValueRange{array, index});
-    rewriter.replaceOp(op, call.getResults());
+    auto load =
+        rewriter.create<emitc::SubscriptOp>(op.getLoc(), resultTy, array, index);
+    rewriter.replaceOp(op, load.getResult());
     return success();
   }
 };
