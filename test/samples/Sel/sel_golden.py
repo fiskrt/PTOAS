@@ -15,8 +15,7 @@ from validation_runtime import (
     float_values,
     load_case_meta,
     matrix32,
-    pack_predicate_mask,
-    packed_mask_storage_cols,
+    pack_predicate_mask_for_buffer,
     rng,
     single_output,
     write_buffers,
@@ -29,13 +28,12 @@ def main():
     mask_name, src0_name, src1_name = meta.inputs
     generator = rng()
     mask_bits = generator.integers(0, 2, size=(ROWS, COLS), dtype=np.uint8).astype(np.bool_)
-    storage_cols = packed_mask_storage_cols(
+    mask = pack_predicate_mask_for_buffer(
+        mask_bits,
         elem_count=meta.elem_counts[mask_name],
         dtype=meta.np_types[mask_name],
         rows=ROWS,
     )
-    mask_bytes = pack_predicate_mask(mask_bits, storage_cols=storage_cols)
-    mask = np.frombuffer(mask_bytes.tobytes(), dtype=meta.np_types[mask_name]).copy()
     src0 = float_values(generator, meta.elem_counts[src0_name], style='signed')
     src1 = float_values(generator, meta.elem_counts[src1_name], style='signed')
     buffers = default_buffers(meta)
