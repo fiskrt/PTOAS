@@ -272,10 +272,9 @@ static bool rewriteMarkerCallToMember(std::string &cpp, llvm::StringRef marker,
                                       unsigned expectedNumArgs) {
   size_t searchPos = 0;
   bool changed = false;
-  while (true) {
-    size_t markerPos = cpp.find(marker.str(), searchPos);
-    if (markerPos == std::string::npos)
-      break;
+  for (size_t markerPos = cpp.find(marker.str(), searchPos);
+       markerPos != std::string::npos;
+       markerPos = cpp.find(marker.str(), searchPos)) {
 
     size_t lparenPos = markerPos + marker.size();
     if (lparenPos >= cpp.size() || cpp[lparenPos] != '(') {
@@ -448,10 +447,9 @@ static bool rewriteMarkerCallToSubscript(std::string &cpp, llvm::StringRef marke
                                          bool isStore) {
   size_t searchPos = 0;
   bool changed = false;
-  while (true) {
-    size_t markerPos = cpp.find(marker.str(), searchPos);
-    if (markerPos == std::string::npos)
-      break;
+  for (size_t markerPos = cpp.find(marker.str(), searchPos);
+       markerPos != std::string::npos;
+       markerPos = cpp.find(marker.str(), searchPos)) {
 
     size_t lparenPos = markerPos + marker.size();
     if (lparenPos >= cpp.size() || cpp[lparenPos] != '(') {
@@ -543,10 +541,9 @@ static void rewriteEventIdArrayMarkers(std::string &cpp) {
 static bool rewriteAddPtrTraceMarkers(std::string &cpp, bool showTrace) {
   size_t searchPos = 0;
   bool changed = false;
-  while (true) {
-    size_t markerPos = cpp.find("PTOAS__ADDPTR_TRACE", searchPos);
-    if (markerPos == std::string::npos)
-      break;
+  for (size_t markerPos = cpp.find("PTOAS__ADDPTR_TRACE", searchPos);
+       markerPos != std::string::npos;
+       markerPos = cpp.find("PTOAS__ADDPTR_TRACE", searchPos)) {
 
     size_t lparenPos = markerPos + (sizeof("PTOAS__ADDPTR_TRACE") - 1);
     if (lparenPos >= cpp.size() || cpp[lparenPos] != '(') {

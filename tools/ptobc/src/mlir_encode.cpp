@@ -1,3 +1,11 @@
+//===- mlir_encode.cpp ----------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #include "ptobc/mlir_helpers.h"
 #include "ptobc/ptobc_format.h"
 
@@ -21,6 +29,7 @@
 
 #include <llvm/ADT/DenseMap.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
@@ -184,7 +193,7 @@ struct Encoder {
     key.resize(1 + payload.size());
     key[0] = char(tag);
     if (!payload.empty()) {
-      std::memcpy(key.data() + 1, payload.data(), payload.size());
+      std::copy(payload.begin(), payload.end(), key.begin() + 1);
     }
     auto it = constIdByKey.find(key);
     if (it != constIdByKey.end()) return it->second;

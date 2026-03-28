@@ -5392,11 +5392,13 @@ Predefined mask patterns for gather operations.
 
 | Value | Int | Pattern |
 |-------|-----|---------|
-| `P0101` | 0 | Alternating 0-1-0-1 |
-| `P0011` | 1 | 0-0-1-1 |
-| `P0110` | 2 | 0-1-1-0 |
+| `P0101` | 1 | Alternating 0-1-0-1 |
+| `P1010` | 2 | Alternating 1-0-1-0 |
 | `P0001` | 3 | 0-0-0-1 |
-| `P1111` | 4 | All ones |
+| `P0010` | 4 | 0-0-1-0 |
+| `P0100` | 5 | 0-1-0-0 |
+| `P1000` | 6 | 1-0-0-0 |
+| `P1111` | 7 | All ones |
 
 ---
 
@@ -5463,61 +5465,116 @@ pto.tconcat ins(%a, %b : !pto.tile_buf<...>, !pto.tile_buf<...>)
 
 ##### `pto.tgather` - Gather/Select Elements
 
-**Summary:** Gathers elements from a source tile using indices or a mask pattern.
+**Summary:** Gathers elements from a source tile using one of three PTO-ISA-compatible forms:
+
+- index gather: `src + indices + tmp -> dst`
+- compare gather: `src + kValue + tmp -> dst + cdst`
+- mask-pattern gather: `src + maskPattern -> dst`
 
 **Semantics:**
 
 ```
-If indices are provided:
+Index form:
     dst[i, j] = src[indices[i, j]]
-Else (mask pattern):
+
+Compare form:
+    dst stores gathered indices that satisfy the scalar compare
+    cdst stores the per-row selected-count / compact-count result
+
+Mask form:
     dst[i, j] = src[...] according to mask pattern
 ```
 
-**Arguments:**
+**Arguments / Attributes:**
 
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile |
-| `indices` | `Optional<pto.tile_buf>` | Index tile (index gather) |
-| `maskPattern` | `MaskPatternAttr` (optional) | Mask pattern (mask gather) |
-| `dst` | `pto.tile_buf` | Destination tile |
+| `dst` | `pto.tile_buf` | Main destination tile |
+| `cdst` | `Optional<pto.tile_buf>` | Secondary destination tile used only by compare form |
+| `indices` | `Optional<pto.tile_buf>` | Index tile used only by index form |
+| `tmp` | `Optional<pto.tile_buf>` | Temporary tile used by index form and compare form |
+| `kValue` | `Optional<scalar>` | Scalar compare value used only by compare form |
+| `maskPattern` | `Optional<MaskPatternAttr>` | Mask pattern used only by mask form |
+| `cmpMode` | `Optional<CmpModeAttr>` | Compare mode used only by compare form; defaults to `eq` when omitted |
+| `offset` | `Optional<i32>` | Compare-form gather base index offset; defaults to `0` when omitted |
 
-**Results:** None. Writes into `dst` via DPS pattern.
+**Results:** None. Writes into DPS destinations.
+
+- Index form writes `dst`
+- Compare form writes both `dst` and `cdst`
+- Mask form writes `dst`
+
+Note: the compare-form C++ API is spelled as `TGATHER(dst, src, k_value, cdst, tmp)`, but in PTO IR the writable operands are grouped under `outs(...)`, so `cdst` appears in `outs(...)` rather than `ins(...)`.
+
+**Assembly Format:**
+
+```mlir
+// index + tmp
+pto.tgather ins(%src, %indices, %tmp : !pto.tile_buf<...>, !pto.tile_buf<...>, !pto.tile_buf<...>)
+           outs(%dst : !pto.tile_buf<...>)
+
+// compare + tmp
+pto.tgather ins(%src, %kValue, %tmp : !pto.tile_buf<...>, <scalar_type>, !pto.tile_buf<...>)
+           outs(%dst, %cdst : !pto.tile_buf<...>, !pto.tile_buf<...>)
+           {cmpMode = #pto.cmp<eq|gt>, offset = <i32>}
+
+// mask pattern
+pto.tgather ins(%src, {maskPattern = #pto.mask_pattern<Pxxxx>} : !pto.tile_buf<...>)
+           outs(%dst : !pto.tile_buf<...>)
+```
 
 **Constraints & Verification:**
 
-- **Index-based gather: implementation checks (A2/A3)**:
-  - `dst` element size must correspond to one of: `i16`, `i32`, `f16`, `f32`.
-  - `indices` element size must correspond to `i32`.
-  - `dst` element type must match `src` element type.
-  - `indices valid column == indices.cols` and `dst valid column == dst.cols`.
-- **Index-based gather: implementation checks (A5)**:
-  - `dst` element size must correspond to one of: `i16`, `i32`, `f16`, `f32`.
-  - `indices` element size must correspond to `i16`, `i32`.
-  - `dst` element type must match `src` element type.
-  - `indices valid column == indices.cols` and `dst valid column == dst.cols`.
+- Exactly one of the following forms must be used:
+  - index form: `indices` and `tmp`
+  - compare form: `kValue`, `tmp`, and `cdst`
+  - mask form: `maskPattern`
+- **Index gather: implementation checks (A2/A3)**:
+  - `src` and `dst` element types must match and be one of `i16/i32/f16/f32`.
+  - `indices` element type must be `i32`.
+  - `tmp` element type must match `indices`.
+- **Index gather: implementation checks (A5)**:
+  - `src` and `dst` element types must match and be one of `i8/i16/i32/f16/f32`.
+  - `indices` element type must be `i16` or `i32`.
+- **Compare gather: implementation checks (A2/A3)**:
+  - `dst` element type must be `i32`.
+  - `src` element type must be `f16/f32`, or `i32` when `cmpMode=eq`.
+  - `cmpMode` must be `eq` or `gt`.
+  - `src`, `dst` must all be `loc=vec`.
+- **Compare gather: implementation checks (A5)**:
+  - `dst` element type must be `i32`.
+  - `src` element type must be one of `i16/i32/f16/f32`.
+  - `cmpMode` must be `eq` or `gt`.
+  - `src`, `dst` must all be `loc=vec`.
 - **Mask-pattern gather: implementation checks (A2/A3)**:
   - Source element size must be `2` or `4` bytes.
-  - `src`/`dst` element type must be `i16` or `i32`
-    or `f16` or `bf16` or `f32`.
   - `src` and `dst` must both use `loc=vec` and `blayout=row_major`.
-  - `src` and `dst` element sizes must match, and `dst valid column == dst.cols`.
+  - `src` and `dst` element sizes must match.
 - **Mask-pattern gather: implementation checks (A5)**:
-  - Source element size must be `1` or `2` or `4` bytes.
+  - Source element size must be `1`, `2`, or `4` bytes.
   - `src` and `dst` must both use `loc=vec` and `blayout=row_major`.
-  - `src`/`dst` element type must be `i8` or `i16` or `i32`
-    or `f16` or `bf16` or `f32` or `float8_e4m3_t`or `float8_e5m2_t` or `hifloat8_t`.
-  - `src` and `dst` element sizes must match, and `dst valid column == dst.cols`.
+  - `src`/`dst` element type must be `i8`, `i16`, `i32`, `f16`, `bf16`, `f32`, or fp8-like supported gather types.
+  - `src` and `dst` element sizes must match.
 
 **Hardware Mapping:**
 
 - Executes on the **Vector pipeline** (`PIPE_V`)
 
-**Basic Example:**
+**Basic Examples:**
 
 ```mlir
-pto.tgather ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
+// index + tmp
+pto.tgather ins(%src, %idx, %tmp : !pto.tile_buf<...>, !pto.tile_buf<...>, !pto.tile_buf<...>)
+           outs(%dst : !pto.tile_buf<...>)
+
+// compare + tmp
+pto.tgather ins(%src, %k, %tmp : !pto.tile_buf<...>, f16, !pto.tile_buf<...>)
+           outs(%dst, %cdst : !pto.tile_buf<...>, !pto.tile_buf<...>)
+           {offset = 7 : i32}
+
+// mask pattern
+pto.tgather ins(%src, {maskPattern = #pto.mask_pattern<P1111>} : !pto.tile_buf<...>)
            outs(%dst : !pto.tile_buf<...>)
 ```
 
@@ -5900,12 +5957,12 @@ pto.tfillpad_expand ins(%src : !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...
 
 ##### `pto.tsort32` - Sort Fixed 32-Element Blocks
 
-**Summary:** Sorts fixed-size 32-element blocks and produces an index mapping.
+**Summary:** Sorts fixed-size 32-element blocks using an explicit input index tile.
 
 **Semantics:**
 
 ```
-dst = sort(src)
+dst = sort(src, idx)
 idx = permutation indices for the sort
 ```
 
@@ -5913,18 +5970,18 @@ idx = permutation indices for the sort
 
 | Name | Type | Description |
 |------|------|-------------|
-| `src` | `pto.tile_buf` | Input tile |
-| `dst` | `pto.tile_buf` | Sorted output |
-| `idx` | `pto.tile_buf` | Index mapping output |
+| `src` | `pto.tile_buf` | Input value tile |
+| `idx` | `pto.tile_buf` | Input index tile permuted together with `src` |
 | `tmp` | `Optional<pto.tile_buf>` | Optional scratch tile for the tmp-taking DPS overload |
+| `dst` | `pto.tile_buf` | Output tile storing sorted value-index pairs |
 
-**Results:** None. Writes into `dst`/`idx` via DPS pattern.
+**Results:** None. Writes into `dst` via DPS pattern.
 
 **Assembly Format:**
 
 ```
-pto.tsort32 ins(<src>[, <tmp>] : <src_type>[, <tmp_type>])
-           outs(<dst>, <idx> : <dst_type>, <idx_type>)
+pto.tsort32 ins(<src>, <idx>[, <tmp>] : <src_type>, <idx_type>[, <tmp_type>])
+           outs(<dst> : <dst_type>)
 ```
 
 **Constraints & Verification:**
@@ -5942,12 +5999,12 @@ pto.tsort32 ins(<src>[, <tmp>] : <src_type>[, <tmp_type>])
 **Basic Example:**
 
 ```mlir
-pto.tsort32 ins(%src : !pto.tile_buf<...>)
-           outs(%dst, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
+pto.tsort32 ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
+           outs(%dst : !pto.tile_buf<...>)
 
 # Optional scratch form:
-pto.tsort32 ins(%src, %tmp : !pto.tile_buf<...>, !pto.tile_buf<...>)
-           outs(%dst, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
+pto.tsort32 ins(%src, %idx, %tmp : !pto.tile_buf<...>, !pto.tile_buf<...>, !pto.tile_buf<...>)
+           outs(%dst : !pto.tile_buf<...>)
 ```
 
 ---
@@ -5966,11 +6023,22 @@ dst = merge_sort(src, blockLen)
 
 | Name | Type | Description |
 |------|------|-------------|
-| `src` | `pto.tile_buf` | Input tile |
-| `dst` | `pto.tile_buf` | Output tile |
-| `blockLen` | `I32Attr` | Block length for merge |
+| `src` / `src0..src3` | PTO shaped-like type | Input tile(s) |
+| `blockLen` | `AnyInteger` operand | Block length for format1 |
+| `dst` | PTO shaped-like type | Output tile |
+| `tmp` | PTO shaped-like type | Temporary output tile for format2 |
+| `excuted` | `vector<4xi16>` | Output vector written by format2 |
 
 **Results:** None. Writes into `dst` via DPS pattern.
+
+**Assembly Format:**
+
+```
+  - `pto.tmrgsort` has two accepted forms:
+    - format1: `ins(src, blockLen : src_type, blockLen_type) outs(dst : dst_type)`
+    - format2: `ins(src0, src1, src2, src3 {exhausted = <bool>} : src0_type, src1_type, src2_type, src3_type) outs(dst, tmp, excuted : dst_type, tmp_type, vector<4xi16>)`
+```
+
 
 **Constraints & Verification:**
 
@@ -5991,7 +6059,16 @@ dst = merge_sort(src, blockLen)
 **Basic Example:**
 
 ```mlir
-pto.tmrgsort ins(%src : !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>) blockLen = 32
+// format1
+pto.tmrgsort ins(%src, %blockLen : !pto.tile_buf<...>, i32)
+             outs(%dst : !pto.tile_buf<...>)
+
+// format2
+pto.tmrgsort ins(%src0, %src1, %src2, %src3 {exhausted = false} :
+                 !pto.tile_buf<...>, !pto.tile_buf<...>,
+                 !pto.tile_buf<...>, !pto.tile_buf<...>)
+             outs(%dst, %tmp, %excuted :
+                 !pto.tile_buf<...>, !pto.tile_buf<...>, vector<4xi16>)
 ```
 
 ---
@@ -6734,6 +6811,13 @@ function's reserved buffer declaration.
 **Syntax:**
 
 ```mlir
+// A2/A3 (with GM slot buffer):
+pto.aic_initialize_pipe {dir_mask = 1, slot_size = 1024}
+  (gm_slot_buffer = %gm_buf : !pto.ptr<f32>,
+   c2v_consumer_buf = %c2v_import : i32,
+   v2c_consumer_buf = %c0_i32 : i32)
+
+// A5 (without GM slot buffer):
 pto.aic_initialize_pipe {dir_mask = 1, slot_size = 1024}
   (c2v_consumer_buf = %c2v_import : i32,
    v2c_consumer_buf = %c0_i32 : i32)
@@ -6743,7 +6827,7 @@ pto.aic_initialize_pipe {dir_mask = 1, slot_size = 1024}
 
 - `dir_mask`: communication direction encoding
 - `slot_size`: logical slot size in bytes
-- `gm_slot_buffer`: optional GM slot-buffer operand
+- `gm_slot_buffer`: optional GM pointer (`!pto.ptr<T>`), required on A2/A3, omitted on A5
 - `c2v_consumer_buf`: C2V consumer local base address
 - `v2c_consumer_buf`: V2C consumer local base address
 
@@ -6761,6 +6845,13 @@ pto.aic_initialize_pipe {dir_mask = 1, slot_size = 1024}
 **Syntax:**
 
 ```mlir
+// A2/A3 (with GM slot buffer):
+pto.aiv_initialize_pipe {dir_mask = 1, slot_size = 1024}
+  (gm_slot_buffer = %gm_buf : !pto.ptr<f32>,
+   c2v_consumer_buf = %c2v_local : i32,
+   v2c_consumer_buf = %c0_i32 : i32)
+
+// A5 (without GM slot buffer):
 pto.aiv_initialize_pipe {dir_mask = 1, slot_size = 1024}
   (c2v_consumer_buf = %c2v_local : i32,
    v2c_consumer_buf = %c0_i32 : i32)

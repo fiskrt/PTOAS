@@ -453,6 +453,14 @@ def _infer_aicore_arch(kernel_text: str, soc_version: str) -> str:
     return "dav-c220-cube" if needs_cube else "dav-c220-vec"
 
 
+def _infer_launch_block_count(kernel_text: str, testcase: str) -> int:
+    # Inter-core sync functional cases need at least two cores:
+    # one producer core does sync.set, one consumer core does sync.wait.
+    if testcase.startswith("test_intercore_sync_") and "get_block_idx()" in kernel_text:
+        return 2
+    return 1
+
+
 def _parse_int_list(blob: str):
     items = []
     for part in blob.split(","):
@@ -1014,11 +1022,11 @@ def generate_testcase(
     init_ptrs = list(data_ptrs)
     output_ptrs = [p for p in data_ptrs if p["role"] == "output"]
 
-    ptr_elem_counts = {p["name"]: logical_elem_count for p in data_ptrs}
     inferred_counts = _infer_gm_pointer_elem_counts(raw_kernel_for_analysis, pointer_param_names)
-    for name, cnt in inferred_counts.items():
-        if name in ptr_elem_counts:
-            ptr_elem_counts[name] = max(ptr_elem_counts.get(name, logical_elem_count), cnt)
+    ptr_elem_counts = {}
+    for p in data_ptrs:
+        inferred = inferred_counts.get(p["name"])
+        ptr_elem_counts[p["name"]] = int(inferred) if inferred and int(inferred) > 0 else logical_elem_count
 
     templates_root = Path(__file__).resolve().parents[1] / "templates"
     template = (templates_root / "main_template.cpp").read_text(encoding="utf-8")
@@ -1174,14 +1182,19 @@ def generate_testcase(
     golden_template = (templates_root / "golden_template.py").read_text(encoding="utf-8")
     input_generate = []
     elem_count = logical_elem_count
+    kernel_has_tscatter = "TSCATTER" in raw_kernel
+    kernel_has_tgather = "TGATHER" in raw_kernel
+    kernel_has_tgatherb = "TGATHERB" in raw_kernel
     # Some kernels use an integer tensor as "indices". The safe in-range domain
-    # depends on the op semantics (see pto-isa docs):
-    # - TSCATTER: indices are linear indices in [0, rows*cols)
-    # - TGATHER/TGATHERB: indices are linear indices in [0, rows*cols)
+    # depends on the op semantics:
+    # - TSCATTER: use a deterministic, collision-free permutation so NPU-vs-NPU
+    #   golden mode stays stable across runs.
+    # - TGATHER: indices are linear indices in [0, rows*cols).
+    # - TGATHERB: offsets are block addresses (bytes), not per-element indices.
     index_mod = None
-    if "TSCATTER" in raw_kernel:
+    if kernel_has_tscatter:
         index_mod = max(elem_count, 1)
-    elif any(m in raw_kernel for m in ("TGATHER", "TGATHERB")):
+    elif kernel_has_tgather and not kernel_has_tgatherb:
         index_mod = max(elem_count, 1)
     mrgsort_packed = "TMRGSORT" in raw_kernel
     for p in init_ptrs:
@@ -1189,6 +1202,10 @@ def generate_testcase(
         name = p["name"]
         size = ptr_elem_counts.get(name, elem_count)
         is_output = p.get("role") == "output"
+        is_integer = np_dtype.startswith("np.int") or np_dtype.startswith("np.uint")
+        is_tscatter_indices = kernel_has_tscatter and p.get("role") == "input" and is_integer and size == elem_count
+        is_tgatherb_offset = kernel_has_tgatherb and p.get("role") == "input" and is_integer and size < elem_count
+        is_tgatherb_src = kernel_has_tgatherb and p.get("role") == "input" and not is_tgatherb_offset
         # If the kernel has both inputs and outputs, default to zero-init for
         # output buffers to match pto-isa ST conventions (and improve determinism).
         zero_init = is_output and len(init_ptrs) > 1
@@ -1254,7 +1271,23 @@ def generate_testcase(
                 input_generate.append(f"    {name}__packed['pad'] = np.uint16(0)")
             input_generate.append(f"    {name}__packed['i'] = {name}__idx")
             input_generate.append(f"    {name}__packed.tofile(\"{name}.bin\")")
-        elif np_dtype.startswith("np.int") or np_dtype.startswith("np.uint"):
+        elif is_tscatter_indices:
+            input_generate.append(f"    {name}__cols = np.arange({cols}, dtype=np.int64).reshape(1, {cols})")
+            input_generate.append(f"    {name}__row_perm = np.random.permutation({rows}).astype(np.int64).reshape({rows}, 1)")
+            input_generate.append(
+                f"    {name} = ({name}__row_perm * {cols} + {name}__cols).astype({np_dtype}).reshape(-1)"
+            )
+            input_generate.append(f"    {name}.tofile(\"{name}.bin\")")
+        elif is_tgatherb_offset:
+            input_generate.append(f"    {name} = (np.arange({size}, dtype=np.uint32) * 32).astype({np_dtype})")
+            input_generate.append(f"    {name}.tofile(\"{name}.bin\")")
+        elif is_tgatherb_src:
+            if is_integer:
+                input_generate.append(f"    {name} = np.arange({size}, dtype=np.int64).astype({np_dtype})")
+            else:
+                input_generate.append(f"    {name} = np.arange({size}, dtype=np.float32).astype({np_dtype})")
+            input_generate.append(f"    {name}.tofile(\"{name}.bin\")")
+        elif is_integer:
             if index_mod is not None:
                 input_generate.append(
                     f"    {name} = (np.arange({size}, dtype=np.int64) % {index_mod}).astype({np_dtype})"
@@ -1305,6 +1338,7 @@ def generate_testcase(
     kernel_call_args_device = ", ".join(kernel_call_args_device)
     kernel_call_args_host = ", ".join(kernel_call_args_host)
     raw_params_host = [_rewrite_host_unsupported_types(p) for p in raw_params]
+    launch_block_count = _infer_launch_block_count(raw_kernel_for_analysis, testcase)
     launch_cpp = (
         INCLUDE_REPLACEMENT
         + "\n"
@@ -1315,9 +1349,9 @@ def generate_testcase(
         "#endif\n\n"
         f"void {launch_name}({launch_fn_params}) {{\n"
         "#if defined(__CCE_AICORE__)\n"
-        f"    {kernel_name}<<<1, nullptr, stream>>>({kernel_call_args_device});\n"
+        f"    {kernel_name}<<<{launch_block_count}, nullptr, stream>>>({kernel_call_args_device});\n"
         "#else\n"
-        f"    {kernel_name}<<<1, nullptr, stream>>>({kernel_call_args_host});\n"
+        f"    {kernel_name}<<<{launch_block_count}, nullptr, stream>>>({kernel_call_args_host});\n"
         "#endif\n"
         f"}}\n"
     )
@@ -1478,6 +1512,13 @@ endif()
     compare_template = (templates_root / "compare_template.py").read_text(encoding="utf-8")
     compare_lines = ["    ok = True"]
     compare_prefix_counts = {}
+    tscatter_indices_input = None
+    if kernel_has_tscatter:
+        for p in init_ptrs:
+            p_dtype = _np_dtype_for_cpp(p["cpp_type"])
+            if p.get("role") == "input" and (p_dtype.startswith("np.int") or p_dtype.startswith("np.uint")):
+                tscatter_indices_input = p
+                break
     for p in output_ptrs:
         name = p["name"]
         req = inferred_counts.get(name)
@@ -1496,7 +1537,12 @@ endif()
         np_dtype = _np_dtype_for_cpp(p["cpp_type"])
         name = p["name"]
         eps = _default_eps_for_cpp_type(p["cpp_type"])
-        if has_packed_pred_mask and p["cpp_type"] in {"uint8_t", "int8_t"}:
+        if kernel_has_tscatter and tscatter_indices_input is not None:
+            compare_lines.append(
+                f"    ok = compare_bin_at_indices(\"golden_{name}.bin\", \"{name}.bin\", {np_dtype}, {eps}, "
+                f"\"{tscatter_indices_input['name']}.bin\", {_np_dtype_for_cpp(tscatter_indices_input['cpp_type'])}) and ok"
+            )
+        elif has_packed_pred_mask and p["cpp_type"] in {"uint8_t", "int8_t"}:
             compare_lines.append(
                 f"    ok = compare_packed_pred_mask(\"golden_{name}.bin\", \"{name}.bin\", {rows}, {cols}) and ok"
             )
@@ -1510,6 +1556,25 @@ endif()
                 compare_lines.append(
                     f"    ok = compare_bin(\"golden_{name}.bin\", \"{name}.bin\", {np_dtype}, {eps}) and ok"
                 )
+    if testcase == "test_intercore_sync_a5_functional":
+        # Extra functional check (not just run-to-run determinism):
+        # core0 writes 2.0 to output[0], core1 waits then mirrors to output[1].
+        out_name = output_ptrs[0]["name"] if output_ptrs else "v1"
+        compare_lines.append(f"    __inter_out = np.fromfile(\"{out_name}.bin\", dtype=np.float32)")
+        compare_lines.append("    if __inter_out.size < 2:")
+        compare_lines.append("        print(f\"[ERROR] intercore check requires >=2 elements, got {__inter_out.size}\")")
+        compare_lines.append("        ok = False")
+        compare_lines.append("    else:")
+        compare_lines.append("        if abs(float(__inter_out[0]) - 2.0) > 1e-6:")
+        compare_lines.append(
+            "            print(f\"[ERROR] intercore check failed: out[0]={float(__inter_out[0])}, expect 2.0\")"
+        )
+        compare_lines.append("            ok = False")
+        compare_lines.append("        if abs(float(__inter_out[1]) - 2.0) > 1e-6:")
+        compare_lines.append(
+            "            print(f\"[ERROR] intercore check failed: out[1]={float(__inter_out[1])}, expect 2.0\")"
+        )
+        compare_lines.append("            ok = False")
     compare_py = compare_template.replace("@COMPARES@", "\n".join(compare_lines))
     (output_dir / "compare.py").write_text(compare_py, encoding="utf-8")
 

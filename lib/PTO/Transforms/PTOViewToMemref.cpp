@@ -1,11 +1,13 @@
-/**
- * PTOViewToMemref.cpp
- * * 功能：将 PTO Dialect 的高层 Tile 操作降级为标准的 MemRef 操作。
- * 核心机制：
- * 1. 类型转换：!pto.tile_buf -> memref<..., offset: ?>
- * 2. 元数据保留：使用 pto.bind_tile 将 TileConfig 绑定到 SSA Value 上。
- * 3. 动态回溯：计算算子通过 lookupConfig 回溯 SSA 链条获取硬件配置。
- */
+//===- PTOViewToMemref.cpp ------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// Lower PTO tile/view operations to memref-based IR while preserving tile
+// metadata through binding ops and SSA backtracking.
 
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
@@ -513,9 +515,6 @@ struct PTOViewToMemrefPass
     ModuleOp mod = getOperation();
     MLIRContext *ctx = &getContext();
 
-    // Debug output before pass
-    // dumpPretty(mod.getOperation(), llvm::errs());
-
     for (auto func : mod.getOps<func::FuncOp>()) {
       if (func.isExternal()) continue;
 
@@ -615,15 +614,21 @@ struct PTOViewToMemrefPass
         auto configAttr = tbTy.getConfigAttr();
         if (!configAttr) configAttr = pto::TileBufConfigAttr::getDefault(ctx);
 
-        // 6. If alloc_tile provides an explicit address, lower directly to
-        // pto.pointer_cast so downstream EmitC lowering can use the integral
-        // address without relying on MemPlan.
+        // 6. If alloc_tile provides an explicit address, keep the original
+        // pointer_cast lowering intact and additionally rebind through
+        // pto.bind_tile. PointerCastOp continues to carry the tile metadata
+        // used by existing lowering paths, while BindTileOp provides the
+        // unified anchor EmitC uses to recover tile_buf information.
         if (Value addr = op.getAddr()) {
           auto pc = rewriter.create<pto::PointerCastOp>(
               loc, targetType, ValueRange{addr}, vRow ? vRow : Value(),
               vCol ? vCol : Value(), configAttr);
           markForceDynamicValidShape(pc, tbTy.hasDynamicValid(), ctx);
-          rewriter.replaceOp(op, pc.getResult());
+          auto bindOp = rewriter.create<pto::BindTileOp>(
+              loc, targetType, pc.getResult(), vRow ? vRow : Value(),
+              vCol ? vCol : Value(), configAttr);
+          markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
+          rewriter.replaceOp(op, bindOp.getResult());
           continue;
         }
 
@@ -637,6 +642,64 @@ struct PTOViewToMemrefPass
         auto bindOp = rewriter.create<pto::BindTileOp>(
             loc, targetType, alloc, vRow ? vRow : Value(), vCol ? vCol : Value(),
             configAttr);
+        markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
+
+        rewriter.replaceOp(op, bindOp.getResult());
+      }
+
+      // ------------------------------------------------------------------
+      // Stage 0.75: lower pto.declare_tile -> pto.declare_tile_memref +
+      //             pto.bind_tile
+      // ------------------------------------------------------------------
+      SmallVector<mlir::pto::DeclareTileOp, 8> declaredTiles;
+      func.walk([&](mlir::pto::DeclareTileOp op) { declaredTiles.push_back(op); });
+
+      for (auto op : declaredTiles) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        Location loc = op.getLoc();
+
+        auto tbTy = dyn_cast<mlir::pto::TileBufType>(op.getTile().getType());
+        if (!tbTy) {
+          op.emitError("declare_tile result must be tile_buf type");
+          signalPassFailure();
+          return;
+        }
+
+        auto targetType = dyn_cast<MemRefType>(convertPTOTypeToMemRef(tbTy));
+        if (!targetType) {
+          op.emitError("failed to convert declare_tile result to memref type");
+          signalPassFailure();
+          return;
+        }
+
+        auto configAttr = tbTy.getConfigAttr();
+        if (!configAttr)
+          configAttr = pto::TileBufConfigAttr::getDefault(ctx);
+
+        Value vRow;
+        Value vCol;
+        ArrayRef<int64_t> validShape = tbTy.getValidShape();
+        if (!tbTy.hasDynamicValid()) {
+          if (validShape.size() >= 1 && validShape[0] >= 0) {
+            vRow = rewriter
+                       .create<arith::ConstantOp>(loc, rewriter.getIndexType(),
+                                                  rewriter.getIndexAttr(validShape[0]))
+                       .getResult();
+          }
+          if (validShape.size() >= 2 && validShape[1] >= 0) {
+            vCol = rewriter
+                       .create<arith::ConstantOp>(loc, rewriter.getIndexType(),
+                                                  rewriter.getIndexAttr(validShape[1]))
+                       .getResult();
+          }
+        }
+
+        auto declaredMemRef =
+            rewriter.create<pto::DeclareTileMemRefOp>(loc, targetType);
+        auto bindOp = rewriter.create<pto::BindTileOp>(
+            loc, targetType, declaredMemRef.getResult(),
+            vRow ? vRow : Value(), vCol ? vCol : Value(), configAttr);
         markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
 
         rewriter.replaceOp(op, bindOp.getResult());
@@ -1638,7 +1701,7 @@ struct PTOViewToMemrefPass
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(op);
 
-        Value s= op.getS();
+        Value s = op->getOperand(0);
         Value dst = op.getDst();
         bool descending = op.getDescending();
 
@@ -2228,8 +2291,13 @@ struct PTOViewToMemrefPass
 
         Value src = op.getSrc();
         Value dst = op.getDst();
+        Value cdst = op.getCdst();
         Value indices = op.getIndices();
+        Value tmp = op.getTmp();
+        Value kValue = op.getKValue();
         auto maskPattern = op.getMaskPatternAttr();
+        auto cmpMode = op.getCmpModeAttr();
+        auto offset = op.getOffsetAttr();
 
         auto srcTy = dyn_cast<MemRefType>(src.getType());
         auto dstTy = dyn_cast<MemRefType>(dst.getType());
@@ -2240,36 +2308,73 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        if (indices) {
-          auto indicesTy = dyn_cast<MemRefType>(indices.getType());
-          if (!indicesTy) {
-            op.emitError("indices must be memref yet");
-            signalPassFailure();
-            return;
-          }
-
+        if (maskPattern) {
           rewriter.replaceOpWithNewOp<pto::TGatherOp>(
               op,
               TypeRange{},
               src,
               dst,
-              indices,
-              /*maskPattern=*/pto::MaskPatternAttr());
-        } else {
-          if (!maskPattern) {
-            op.emitError("expects maskPattern when indices is absent");
-            signalPassFailure();
-            return;
-          }
-
-          rewriter.replaceOpWithNewOp<pto::TGatherOp>(
-              op,
-              TypeRange{},
-              src,
-              dst,
+              /*cdst=*/Value(),
               /*indices=*/Value(),
-              /*maskPattern=*/maskPattern);
+              /*tmp=*/Value(),
+              /*kValue=*/Value(),
+              /*maskPattern=*/maskPattern,
+              /*cmpMode=*/pto::CmpModeAttr(),
+              /*offset=*/IntegerAttr());
+          continue;
         }
+
+        if (cdst || kValue) {
+          auto cdstTy = dyn_cast<MemRefType>(cdst.getType());
+          auto tmpTy = dyn_cast<MemRefType>(tmp.getType());
+          if (!cdstTy || !tmpTy) {
+            op.emitError("compare-form tgather expects cdst/tmp to be memref yet");
+            signalPassFailure();
+            return;
+          }
+
+          rewriter.replaceOpWithNewOp<pto::TGatherOp>(
+              op,
+              TypeRange{},
+              src,
+              dst,
+              cdst,
+              /*indices=*/Value(),
+              tmp,
+              kValue,
+              /*maskPattern=*/pto::MaskPatternAttr(),
+              cmpMode,
+              offset);
+          continue;
+        }
+
+        if (indices || tmp) {
+          auto indicesTy = dyn_cast<MemRefType>(indices.getType());
+          auto tmpTy = dyn_cast<MemRefType>(tmp.getType());
+          if (!indicesTy || !tmpTy) {
+            op.emitError("index-form tgather expects indices/tmp to be memref yet");
+            signalPassFailure();
+            return;
+          }
+
+          rewriter.replaceOpWithNewOp<pto::TGatherOp>(
+              op,
+              TypeRange{},
+              src,
+              dst,
+              /*cdst=*/Value(),
+              indices,
+              tmp,
+              /*kValue=*/Value(),
+              /*maskPattern=*/pto::MaskPatternAttr(),
+              /*cmpMode=*/pto::CmpModeAttr(),
+              /*offset=*/IntegerAttr());
+          continue;
+        }
+
+        op.emitError("expects tgather to be in mask, index+tmp, or compare+tmp form");
+        signalPassFailure();
+        return;
       }
 
       SmallVector<mlir::pto::TGatherBOp, 8> gatherbops;

@@ -92,6 +92,7 @@ static bool isSupportedVecElemType(Type ty, bool allowBf16 = true,
 static bool isSupportedLoadStoreElemTypeA2A3(Type ty);
 static bool isSupportedGatherElemTypeA2A3(Type ty);
 static bool isSupportedGatherElemTypeA5(Type ty);
+static bool isTileLikeType(Type ty);
 static SmallVector<int64_t, 4> getShapeVec(Type ty);
 static SmallVector<int64_t, 4> getValidShapeVec(Type ty);
 static SmallVector<int64_t, 4> getValidShapeVec(Value value);
@@ -472,109 +473,215 @@ void mlir::pto::TDivSOp::print(OpAsmPrinter &p) {
 
 
 //===----------------------------------------------------------------------===//
-// pto.tgather custom asm to support both:
-//   pto.tgather ins(%src, %indices : !pto.tile_buf<...>, !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>)
-//   pto.tgather ins(%src, {maskPattern = #pto.mask_pattern<P0101>} : !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>)
-//
-// Legacy syntax support (for existing test artifacts):
-//   pto.tgather ins(%src : !pto.tile_buf<...>, %indices : !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>) [maskPattern = ...]
+// pto.tgather custom asm supports three PTO-ISA forms:
+//   1) index+tmp   : ins(%src, %indices, %tmp : srcTy, indicesTy, tmpTy) outs(%dst : dstTy)
+//   2) compare+tmp : ins(%src, %kValue, %tmp : srcTy, scalarTy, tmpTy)
+//                    outs(%dst, %cdst : dstTy, cdstTy) {cmpMode = #pto.cmp<gt>, offset = 7}
+//   3) mask        : ins(%src, {maskPattern = #pto.mask_pattern<P0101>} : srcTy) outs(%dst : dstTy)
 //===----------------------------------------------------------------------===//
 
 ParseResult mlir::pto::TGatherOp::parse(OpAsmParser &parser, OperationState &result) {
-  OpAsmParser::UnresolvedOperand src, dst, indices;
-  Type srcTy, dstTy, indicesTy;
+  OpAsmParser::UnresolvedOperand src, dst, cdst;
+  SmallVector<OpAsmParser::UnresolvedOperand, 3> insOps;
+  SmallVector<Type, 3> insTypes;
+  Type srcTy, dstTy, cdstTy;
+  bool hasCdst = false;
+  bool hasMask = false;
   bool hasIndices = false;
+  bool hasTmp = false;
+  bool hasKValue = false;
 
-  // ins(...)
   if (parser.parseKeyword("ins") || parser.parseLParen() || parser.parseOperand(src))
     return failure();
 
-  // New-style: ins(%src, <indices-or-{maskPattern=...}> : ...)
-  if (succeeded(parser.parseOptionalComma())) {
-    // Mask form: ins(%src, {maskPattern = #pto.mask_pattern<Pxxxx>} : srcTy)
-    if (succeeded(parser.parseOptionalLBrace())) {
-      if (parser.parseKeyword("maskPattern") || parser.parseEqual())
-        return failure();
-
-      Attribute rawMaskAttr;
-      if (parser.parseAttribute(rawMaskAttr) || parser.parseRBrace())
-        return failure();
-
-      auto mp = llvm::dyn_cast<mlir::pto::MaskPatternAttr>(rawMaskAttr);
-      if (!mp)
-        return parser.emitError(parser.getCurrentLocation(),
-                                "expected #pto.mask_pattern<Pxxxx> for maskPattern");
-
-      result.addAttribute("maskPattern", mp);
-
-      if (parser.parseColonType(srcTy) || parser.parseRParen())
-        return failure();
-    } else {
-      // Index form: ins(%src, %indices : srcTy, indicesTy)
-      if (parser.parseOperand(indices) || parser.parseColonType(srcTy) ||
-          parser.parseComma() || parser.parseType(indicesTy) || parser.parseRParen())
-        return failure();
-      hasIndices = true;
-    }
-  } else if (succeeded(parser.parseOptionalColon())) {
-    // Legacy typed-operand form:
-    //   ins(%src : srcTy, %indices : indicesTy)
-    if (parser.parseType(srcTy) || parser.parseComma() ||
-        parser.parseOperand(indices) || parser.parseColonType(indicesTy) ||
-        parser.parseRParen())
-      return failure();
-    hasIndices = true;
-  } else {
+  if (!succeeded(parser.parseOptionalComma())) {
     return parser.emitError(parser.getCurrentLocation(),
-                            "expected ',' or ':' after src operand in ins(...)");
+                            "expected ',' after src operand in ins(...)");
   }
 
-  // outs(...)
-  if (parser.parseKeyword("outs") || parser.parseLParen() ||
-      parser.parseOperand(dst) || parser.parseColonType(dstTy) || parser.parseRParen())
+  if (succeeded(parser.parseOptionalLBrace())) {
+    if (parser.parseKeyword("maskPattern") || parser.parseEqual())
+      return failure();
+
+    Attribute rawMaskAttr;
+    if (parser.parseAttribute(rawMaskAttr) || parser.parseRBrace())
+      return failure();
+
+    auto mp = llvm::dyn_cast<mlir::pto::MaskPatternAttr>(rawMaskAttr);
+    if (!mp) {
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected #pto.mask_pattern<Pxxxx> for maskPattern");
+    }
+
+    result.addAttribute("maskPattern", mp);
+    hasMask = true;
+
+    if (parser.parseColonType(srcTy) || parser.parseRParen())
+      return failure();
+  } else {
+    OpAsmParser::UnresolvedOperand extra;
+    if (parser.parseOperand(extra))
+      return failure();
+    insOps.push_back(extra);
+    while (succeeded(parser.parseOptionalComma())) {
+      if (insOps.size() == 3) {
+        return parser.emitError(parser.getCurrentLocation(),
+                                "expected at most 3 extra operands in tgather ins(...)");
+      }
+      if (parser.parseOperand(extra))
+        return failure();
+      insOps.push_back(extra);
+    }
+
+    if (parser.parseColon() || parser.parseType(srcTy))
+      return failure();
+    for (size_t i = 0; i < insOps.size(); ++i) {
+      Type ty;
+      if (parser.parseComma() || parser.parseType(ty))
+        return failure();
+      insTypes.push_back(ty);
+    }
+    if (parser.parseRParen())
+      return failure();
+  }
+
+  if (parser.parseKeyword("outs") || parser.parseLParen() || parser.parseOperand(dst))
+    return failure();
+  if (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseOperand(cdst))
+      return failure();
+    hasCdst = true;
+  }
+  if (parser.parseColonType(dstTy))
+    return failure();
+  if (hasCdst && (parser.parseComma() || parser.parseType(cdstTy)))
+    return failure();
+  if (parser.parseRParen())
     return failure();
 
-  // Optional legacy: maskPattern = #pto.mask_pattern<Pxxxx>
   if (succeeded(parser.parseOptionalKeyword("maskPattern"))) {
+    if (hasMask)
+      return parser.emitError(parser.getCurrentLocation(),
+                              "maskPattern may only be specified once");
     if (parser.parseEqual())
       return failure();
     Attribute rawMaskAttr;
     if (parser.parseAttribute(rawMaskAttr))
       return failure();
     auto mp = llvm::dyn_cast<mlir::pto::MaskPatternAttr>(rawMaskAttr);
-    if (!mp)
+    if (!mp) {
       return parser.emitError(parser.getCurrentLocation(),
                               "expected #pto.mask_pattern<Pxxxx> for maskPattern");
+    }
     result.addAttribute("maskPattern", mp);
+    hasMask = true;
   }
 
-  // attr-dict
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
 
-  // Resolve operands in op order: (src, dst, optional indices).
+  if (hasMask) {
+    if (!insOps.empty())
+      return parser.emitError(parser.getCurrentLocation(),
+                              "mask-pattern tgather does not take extra ins operands");
+    if (hasCdst)
+      return parser.emitError(parser.getCurrentLocation(),
+                              "mask-pattern tgather expects a single outs operand");
+  } else if (hasCdst) {
+    if (insOps.empty() ||
+        !(mlir::isa<IntegerType>(insTypes.front()) ||
+          mlir::isa<FloatType>(insTypes.front())))
+      return parser.emitError(parser.getCurrentLocation(),
+                              "compare-form tgather expects a scalar kValue operand");
+    hasKValue = true;
+    if (insOps.size() >= 2) {
+      if (!isTileLikeType(insTypes[1]))
+        return parser.emitError(parser.getCurrentLocation(),
+                                "compare-form tgather tmp must be tile-like");
+      hasTmp = true;
+    }
+    if (insOps.size() == 3) {
+      return parser.emitError(parser.getCurrentLocation(),
+                              "compare-form tgather expects at most src, kValue, tmp in ins(...)");
+    }
+  } else {
+    if (!insOps.empty() && !isTileLikeType(insTypes.front())) {
+      return parser.emitError(parser.getCurrentLocation(),
+                              "index-form tgather expects tile-like indices; "
+                              "compare-form must use outs(dst, cdst)");
+    }
+    if (!insOps.empty()) {
+      hasIndices = true;
+      if (insOps.size() >= 2) {
+        if (!isTileLikeType(insTypes[1]))
+          return parser.emitError(parser.getCurrentLocation(),
+                                  "index-form tgather tmp must be tile-like");
+        hasTmp = true;
+      }
+    }
+    if (insOps.size() == 3) {
+      return parser.emitError(parser.getCurrentLocation(),
+                              "index-form tgather expects at most src, indices, tmp in ins(...)");
+    }
+  }
+
   if (parser.resolveOperand(src, srcTy, result.operands) ||
       parser.resolveOperand(dst, dstTy, result.operands))
     return failure();
-  if (hasIndices && parser.resolveOperand(indices, indicesTy, result.operands))
+  if (hasCdst && parser.resolveOperand(cdst, cdstTy, result.operands))
+    return failure();
+  if (hasIndices && parser.resolveOperand(insOps[0], insTypes[0], result.operands))
+    return failure();
+  if (hasTmp && parser.resolveOperand(insOps[hasIndices ? 1 : 1], insTypes[1], result.operands))
+    return failure();
+  if (hasKValue && parser.resolveOperand(insOps[0], insTypes[0], result.operands))
     return failure();
 
+  result.addAttribute("operandSegmentSizes",
+                      parser.getBuilder().getDenseI32ArrayAttr(
+                          {1, 1, hasCdst ? 1 : 0, hasIndices ? 1 : 0,
+                           hasTmp ? 1 : 0, hasKValue ? 1 : 0}));
   return success();
 }
 
 void mlir::pto::TGatherOp::print(OpAsmPrinter &p) {
-  auto indices = getIndices();
-  auto mp = getMaskPatternAttr();
-
   p << " ins(" << getSrc() << ", ";
-  if (indices) {
-    p << indices << " : " << getSrc().getType() << ", " << indices.getType();
-  } else {
+  if (auto mp = getMaskPatternAttr()) {
     p << "{maskPattern = " << mp << "} : " << getSrc().getType();
+  } else if (getCdst()) {
+    p << getKValue();
+    if (getTmp()) {
+      p << ", " << getTmp();
+      p << " : " << getSrc().getType() << ", " << getKValue().getType()
+        << ", " << getTmp().getType();
+    } else {
+      p << " : " << getSrc().getType() << ", " << getKValue().getType();
+    }
+  } else {
+    p << getIndices();
+    if (getTmp()) {
+      p << ", " << getTmp();
+      p << " : " << getSrc().getType() << ", " << getIndices().getType()
+        << ", " << getTmp().getType();
+    } else {
+      p << " : " << getSrc().getType() << ", " << getIndices().getType();
+    }
   }
-  p << ") outs(" << getDst() << " : " << getDst().getType() << ")";
+  p << ") outs(" << getDst();
+  if (getCdst())
+    p << ", " << getCdst();
+  p << " : " << getDst().getType();
+  if (getCdst())
+    p << ", " << getCdst().getType();
+  p << ")";
 
-  p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"maskPattern"});
+  if (getMaskPatternAttr()) {
+    p.printOptionalAttrDict((*this)->getAttrs(),
+                            /*elidedAttrs=*/{"maskPattern", "operandSegmentSizes"});
+  } else {
+    p.printOptionalAttrDict((*this)->getAttrs(),
+                            /*elidedAttrs=*/{"operandSegmentSizes"});
+  }
 }
 
 ParseResult mlir::pto::MakeTensorViewOp::parse(OpAsmParser &parser,
@@ -1364,6 +1471,130 @@ LogicalResult mlir::pto::SetFFTsOp::verify() {
     return emitOpError("expects element type i64 (or i8)");
 
   return mlir::success();
+}
+
+ParseResult mlir::pto::SyncSetOp::parse(OpAsmParser &parser,
+                                        OperationState &result) {
+  PipeAttr pipeAttr;
+  if (succeeded(parser.parseOptionalLess())) {
+    StringRef pipeTok;
+    if (parser.parseKeyword(&pipeTok) || parser.parseGreater())
+      return failure();
+    auto pipeOr = symbolizePIPE(pipeTok);
+    if (!pipeOr)
+      return parser.emitError(parser.getCurrentLocation())
+             << "unknown pipe token: " << pipeTok;
+    pipeAttr = PipeAttr::get(parser.getContext(), *pipeOr);
+    result.addAttribute(getPipeAttrName(result.name), pipeAttr);
+  } else if (parser.parseAttribute(pipeAttr, getPipeAttrName(result.name),
+                                   result.attributes)) {
+    return failure();
+  }
+  if (parser.parseComma())
+    return failure();
+
+  OpAsmParser::UnresolvedOperand eventOperand;
+  OptionalParseResult parseEventOperand =
+      parser.parseOptionalOperand(eventOperand);
+  if (parseEventOperand.has_value()) {
+    if (failed(*parseEventOperand))
+      return failure();
+    if (parser.resolveOperand(eventOperand, parser.getBuilder().getIndexType(),
+                              result.operands))
+      return failure();
+  } else {
+    IntegerAttr eventAttr;
+    if (parser.parseAttribute(eventAttr, parser.getBuilder().getI32Type(),
+                              getEventIdAttrName(result.name),
+                              result.attributes))
+      return failure();
+  }
+
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  return success();
+}
+
+void mlir::pto::SyncSetOp::print(OpAsmPrinter &p) {
+  p << " <" << stringifyPIPE(getPipe().getPipe()) << ">, ";
+  if (IntegerAttr eventAttr = getEventIdAttr()) {
+    p << eventAttr.getInt();
+  } else {
+    p << getEventIdDyn();
+  }
+  p.printOptionalAttrDict((*this)->getAttrs(),
+                          {getPipeAttrName(), getEventIdAttrName()});
+}
+
+LogicalResult mlir::pto::SyncSetOp::verify() {
+  bool hasStatic = getEventIdAttr() != nullptr;
+  bool hasDynamic = static_cast<bool>(getEventIdDyn());
+  if (hasStatic == hasDynamic)
+    return emitOpError()
+           << "expects exactly one event-id form: static attr or dynamic index operand";
+  return success();
+}
+
+ParseResult mlir::pto::SyncWaitOp::parse(OpAsmParser &parser,
+                                         OperationState &result) {
+  PipeAttr pipeAttr;
+  if (succeeded(parser.parseOptionalLess())) {
+    StringRef pipeTok;
+    if (parser.parseKeyword(&pipeTok) || parser.parseGreater())
+      return failure();
+    auto pipeOr = symbolizePIPE(pipeTok);
+    if (!pipeOr)
+      return parser.emitError(parser.getCurrentLocation())
+             << "unknown pipe token: " << pipeTok;
+    pipeAttr = PipeAttr::get(parser.getContext(), *pipeOr);
+    result.addAttribute(getPipeAttrName(result.name), pipeAttr);
+  } else if (parser.parseAttribute(pipeAttr, getPipeAttrName(result.name),
+                                   result.attributes)) {
+    return failure();
+  }
+  if (parser.parseComma())
+    return failure();
+
+  OpAsmParser::UnresolvedOperand eventOperand;
+  OptionalParseResult parseEventOperand =
+      parser.parseOptionalOperand(eventOperand);
+  if (parseEventOperand.has_value()) {
+    if (failed(*parseEventOperand))
+      return failure();
+    if (parser.resolveOperand(eventOperand, parser.getBuilder().getIndexType(),
+                              result.operands))
+      return failure();
+  } else {
+    IntegerAttr eventAttr;
+    if (parser.parseAttribute(eventAttr, parser.getBuilder().getI32Type(),
+                              getEventIdAttrName(result.name),
+                              result.attributes))
+      return failure();
+  }
+
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  return success();
+}
+
+void mlir::pto::SyncWaitOp::print(OpAsmPrinter &p) {
+  p << " <" << stringifyPIPE(getPipe().getPipe()) << ">, ";
+  if (IntegerAttr eventAttr = getEventIdAttr()) {
+    p << eventAttr.getInt();
+  } else {
+    p << getEventIdDyn();
+  }
+  p.printOptionalAttrDict((*this)->getAttrs(),
+                          {getPipeAttrName(), getEventIdAttrName()});
+}
+
+LogicalResult mlir::pto::SyncWaitOp::verify() {
+  bool hasStatic = getEventIdAttr() != nullptr;
+  bool hasDynamic = static_cast<bool>(getEventIdDyn());
+  if (hasStatic == hasDynamic)
+    return emitOpError()
+           << "expects exactly one event-id form: static attr or dynamic index operand";
+  return success();
 }
 
 LogicalResult TStoreOp::verify() {
@@ -2354,7 +2585,7 @@ LogicalResult pto::TCIOp::verify() {
   if (bw != 16 && bw != 32)
     return emitOpError("expects dst element type to be i16/i32");
 
-  auto sTy = getS().getType().dyn_cast<IntegerType>();
+  auto sTy = getOperand(0).getType().dyn_cast<IntegerType>();
   if (!sTy)
     return emitOpError("expects S to be integer");
 
@@ -3360,60 +3591,23 @@ mlir::LogicalResult mlir::pto::TFillPadExpandOp::verify() {
 }
 
 
-// TGather: must provide exactly one of {indices operand, maskPattern attr}.
 llvm::LogicalResult mlir::pto::TGatherOp::verify() {
-  auto verifyCommon = [&](bool allow16BitIndices,
-                          bool allowA5MaskTypes) -> LogicalResult {
-    Value indices = getIndices();
-    auto maskAttr = getMaskPatternAttr();
-    const bool hasIdx = static_cast<bool>(indices);
-    const bool hasMask = static_cast<bool>(maskAttr);
-    if (hasIdx == hasMask)
-      return emitOpError()
-             << "expects exactly one of: 'indices' operand OR 'maskPattern' attribute";
+  auto isSupportedGatherElemTypeA5Index = [&](Type ty) -> bool {
+    if (ty.isF16() || ty.isF32())
+      return true;
+    if (auto it = dyn_cast<IntegerType>(ty)) {
+      unsigned width = it.getWidth();
+      return width == 8 || width == 16 || width == 32;
+    }
+    return false;
+  };
 
+  auto verifyMaskForm = [&](bool allowA5MaskTypes) -> LogicalResult {
     Type srcTy = getSrc().getType();
     Type dstTy = getDst().getType();
     if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
         failed(verifyTileBufCommon(*this, dstTy, "dst")))
       return failure();
-
-    auto dstValid = getValidShapeVec(dstTy);
-    auto dstShape = getShapeVec(dstTy);
-    if (dstValid.size() == 2 && dstShape.size() == 2 &&
-        dstValid[1] != ShapedType::kDynamic && dstShape[1] != ShapedType::kDynamic &&
-        dstValid[1] != dstShape[1])
-      return emitOpError("expects dst valid_shape[1] to equal dst cols");
-
-    if (hasIdx) {
-      Type idxTy = indices.getType();
-      if (failed(verifyTileBufCommon(*this, idxTy, "indices")))
-        return failure();
-      Type srcElem = getElemTy(srcTy);
-      Type dstElem = getElemTy(dstTy);
-      if (!srcElem || !dstElem)
-        return emitOpError("failed to get element type for src/dst");
-      if (srcElem != dstElem)
-        return emitOpError("expects src and dst to have the same element type");
-      if (!isSupportedGatherElemTypeA2A3(srcElem) ||
-          !isSupportedGatherElemTypeA2A3(dstElem))
-        return emitOpError(
-            "expects gather src/dst element type to be i16/i32/f16/f32");
-      auto idxElem = dyn_cast<IntegerType>(getElemTy(idxTy));
-      if (!idxElem)
-        return emitOpError() << "indices element type must be integer";
-      unsigned width = idxElem.getWidth();
-      if (!(width == 32 || (allow16BitIndices && width == 16)))
-        return emitOpError() << "expects indices element type to be i32"
-                             << (allow16BitIndices ? " or i16" : "");
-      auto idxValid = getValidShapeVec(idxTy);
-      if (idxValid.size() == 2 && getShapeVec(idxTy).size() == 2 &&
-          idxValid[1] != ShapedType::kDynamic &&
-          getShapeVec(idxTy)[1] != ShapedType::kDynamic &&
-          idxValid[1] != getShapeVec(idxTy)[1])
-        return emitOpError("expects indices valid_shape[1] to equal indices cols");
-      return success();
-    }
 
     Type srcElem = getElemTy(srcTy);
     Type dstElem = getElemTy(dstTy);
@@ -3430,6 +3624,15 @@ llvm::LogicalResult mlir::pto::TGatherOp::verify() {
     unsigned dstElemBytes = dstElem.getIntOrFloatBitWidth() / 8;
     if (srcElemBytes != dstElemBytes)
       return emitOpError("expects src and dst element sizes to match");
+
+    auto dstValid = getValidShapeVec(dstTy);
+    auto dstShape = getShapeVec(dstTy);
+    if (dstValid.size() == 2 && dstShape.size() == 2 &&
+        dstValid[1] != ShapedType::kDynamic && dstShape[1] != ShapedType::kDynamic &&
+        dstValid[1] != dstShape[1]) {
+      return emitOpError("expects dst valid_shape[1] to equal dst cols");
+    }
+
     if (allowA5MaskTypes) {
       if (!(srcElemBytes == 1 || srcElemBytes == 2 || srcElemBytes == 4))
         return emitOpError("expects A5 mask-pattern gather element size to be 1, 2, or 4 bytes");
@@ -3439,19 +3642,159 @@ llvm::LogicalResult mlir::pto::TGatherOp::verify() {
     } else {
       if (!(srcElemBytes == 2 || srcElemBytes == 4))
         return emitOpError("expects A2/A3 mask-pattern gather element size to be 2 or 4 bytes");
-      if (!(isSupportedGatherElemTypeA2A3(srcElem) || srcElem.isBF16()) ||
-          !(isSupportedGatherElemTypeA2A3(dstElem) || dstElem.isBF16()))
-        return emitOpError(
-            "expects A2/A3 mask-pattern gather src/dst element type to be i16/i32/f16/bf16/f32");
     }
     return success();
   };
+
+  auto verifyIndexForm = [&](bool allow16BitIndices, bool allowA5ElemTypes) -> LogicalResult {
+    Type srcTy = getSrc().getType();
+    Type dstTy = getDst().getType();
+    Type idxTy = getIndices().getType();
+    Type tmpTy = getTmp().getType();
+    if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
+        failed(verifyTileBufCommon(*this, dstTy, "dst")) ||
+        failed(verifyTileBufCommon(*this, idxTy, "indices")) ||
+        failed(verifyTileBufCommon(*this, tmpTy, "tmp")))
+      return failure();
+
+    Type srcElem = getElemTy(srcTy);
+    Type dstElem = getElemTy(dstTy);
+    if (!srcElem || !dstElem)
+      return emitOpError("failed to get element type for src/dst");
+    if (srcElem != dstElem)
+      return emitOpError("expects src and dst to have the same element type");
+    if (allowA5ElemTypes) {
+      if (!isSupportedGatherElemTypeA5Index(srcElem) ||
+          !isSupportedGatherElemTypeA5Index(dstElem))
+        return emitOpError(
+            "expects A5 gather src/dst element type to be i8/i16/i32/f16/f32");
+    } else if (!isSupportedGatherElemTypeA2A3(srcElem) ||
+               !isSupportedGatherElemTypeA2A3(dstElem)) {
+      return emitOpError("expects gather src/dst element type to be i16/i32/f16/f32");
+    }
+
+    auto idxElem = dyn_cast<IntegerType>(getElemTy(idxTy));
+    if (!idxElem)
+      return emitOpError("indices element type must be integer");
+    unsigned width = idxElem.getWidth();
+    if (!(width == 32 || (allow16BitIndices && width == 16))) {
+      return emitOpError() << "expects indices element type to be i32"
+                           << (allow16BitIndices ? " or i16" : "");
+    }
+
+    auto dstValid = getValidShapeVec(dstTy);
+    auto dstShape = getShapeVec(dstTy);
+    if (dstValid.size() == 2 && dstShape.size() == 2 &&
+        dstValid[1] != ShapedType::kDynamic && dstShape[1] != ShapedType::kDynamic &&
+        dstValid[1] != dstShape[1]) {
+      return emitOpError("expects dst valid_shape[1] to equal dst cols");
+    }
+
+    auto idxValid = getValidShapeVec(idxTy);
+    auto idxShape = getShapeVec(idxTy);
+    if (idxValid.size() == 2 && idxShape.size() == 2 &&
+        idxValid[1] != ShapedType::kDynamic && idxShape[1] != ShapedType::kDynamic &&
+        idxValid[1] != idxShape[1]) {
+      return emitOpError("expects indices valid_shape[1] to equal indices cols");
+    }
+
+    if (!allowA5ElemTypes) {
+      Type tmpElem = getElemTy(tmpTy);
+      if (tmpElem != idxElem)
+        return emitOpError("expects tmp and indices to have the same element type");
+      if (failed(verifyTileBufSameValidShape(*this, idxTy, tmpTy, "indices", "tmp")))
+        return failure();
+    }
+    return success();
+  };
+
+  auto verifyCompareForm = [&](bool allowA5SrcTypes) -> LogicalResult {
+    Type srcTy = getSrc().getType();
+    Type dstTy = getDst().getType();
+    Type cdstTy = getCdst().getType();
+    Type tmpTy = getTmp().getType();
+    if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
+        failed(verifyTileBufCommon(*this, dstTy, "dst")) ||
+        failed(verifyTileBufCommon(*this, cdstTy, "cdst")) ||
+        failed(verifyTileBufCommon(*this, tmpTy, "tmp")))
+      return failure();
+
+    Type srcElem = getElemTy(srcTy);
+    Type dstElem = getElemTy(dstTy);
+    Type cdstElem = getElemTy(cdstTy);
+    if (!srcElem || !dstElem || !cdstElem)
+      return emitOpError("failed to get element type for src/dst/cdst");
+    auto dstInt = dyn_cast<IntegerType>(dstElem);
+    if (!dstInt || dstInt.getWidth() != 32)
+      return emitOpError("expects dst element type to be i32");
+    if (cdstElem != dstElem)
+      return emitOpError("expects cdst to have the same element type as dst");
+    if (getKValue().getType() != srcElem)
+      return emitOpError("expects kValue to have the same type as src element type");
+
+    auto cmpAttr = getCmpModeAttr();
+    auto cmpMode = cmpAttr ? cmpAttr.getValue() : pto::CmpMode::EQ;
+    if (cmpMode != pto::CmpMode::EQ && cmpMode != pto::CmpMode::GT)
+      return emitOpError("expects compare-form tgather cmpMode to be eq or gt");
+
+    if (allowA5SrcTypes) {
+      if (!(srcElem.isF16() || srcElem.isF32() || srcElem.isInteger(16) ||
+            srcElem.isInteger(32))) {
+        return emitOpError(
+            "expects A5 compare-form tgather src element type to be i16/i32/f16/f32");
+      }
+    } else {
+      if (!(srcElem.isF16() || srcElem.isF32() ||
+            (srcElem.isInteger(32) && cmpMode == pto::CmpMode::EQ))) {
+        return emitOpError(
+            "expects A2/A3 compare-form tgather src element type to be f16/f32, or i32 when cmpMode=eq");
+      }
+    }
+
+    if (failed(verifyVecTileCommonA2A3(*this, srcTy, "src")) ||
+        failed(verifyVecTileCommonA2A3(*this, dstTy, "dst")) ||
+        failed(verifyVecTileCommonA2A3(*this, cdstTy, "cdst")) ||
+        failed(verifyVecTileCommonA2A3(*this, tmpTy, "tmp")))
+      return failure();
+    return success();
+  };
+
   auto verifyA2A3 = [&]() -> LogicalResult {
-    return verifyCommon(/*allow16BitIndices=*/false, /*allowA5MaskTypes=*/false);
+    if (getMaskPatternAttr()) {
+      if (getCdst() || getIndices() || getTmp() || getKValue())
+        return emitOpError("mask-pattern tgather only allows src and dst operands");
+      return verifyMaskForm(/*allowA5MaskTypes=*/false);
+    }
+    if (getCdst() || getKValue()) {
+      if (!getCdst() || !getKValue() || !getTmp())
+        return emitOpError("compare-form tgather expects dst, cdst, kValue, and tmp");
+      if (getIndices())
+        return emitOpError("compare-form tgather does not take indices");
+      return verifyCompareForm(/*allowA5SrcTypes=*/false);
+    }
+    if (!getIndices() || !getTmp())
+      return emitOpError("index-form tgather expects both indices and tmp");
+    return verifyIndexForm(/*allow16BitIndices=*/false, /*allowA5ElemTypes=*/false);
   };
+
   auto verifyA5 = [&]() -> LogicalResult {
-    return verifyCommon(/*allow16BitIndices=*/true, /*allowA5MaskTypes=*/true);
+    if (getMaskPatternAttr()) {
+      if (getCdst() || getIndices() || getTmp() || getKValue())
+        return emitOpError("mask-pattern tgather only allows src and dst operands");
+      return verifyMaskForm(/*allowA5MaskTypes=*/true);
+    }
+    if (getCdst() || getKValue()) {
+      if (!getCdst() || !getKValue() || !getTmp())
+        return emitOpError("compare-form tgather expects dst, cdst, kValue, and tmp");
+      if (getIndices())
+        return emitOpError("compare-form tgather does not take indices");
+      return verifyCompareForm(/*allowA5SrcTypes=*/true);
+    }
+    if (!getIndices() || !getTmp())
+      return emitOpError("index-form tgather expects both indices and tmp");
+    return verifyIndexForm(/*allow16BitIndices=*/true, /*allowA5ElemTypes=*/true);
   };
+
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 mlir::LogicalResult mlir::pto::TGatherBOp::verify() {
@@ -5194,18 +5537,24 @@ mlir::LogicalResult mlir::pto::TRowExpandOp::verify() {
 
 
 ParseResult mlir::pto::TSort32Op::parse(OpAsmParser &parser, OperationState &result) {
-  OpAsmParser::UnresolvedOperand src, dst, idx, tmp;
+  OpAsmParser::UnresolvedOperand src, idx, tmp, dst;
   Type srcTy, dstTy, idxTy, tmpTy;
   bool hasTmp = false;
 
   if (parser.parseKeyword("ins") || parser.parseLParen() || parser.parseOperand(src))
     return failure();
   if (succeeded(parser.parseOptionalComma())) {
-    if (parser.parseOperand(tmp))
+    if (parser.parseOperand(idx))
       return failure();
-    hasTmp = true;
+    if (succeeded(parser.parseOptionalComma())) {
+      if (parser.parseOperand(tmp))
+        return failure();
+      hasTmp = true;
+    }
+  } else {
+    return failure();
   }
-  if (parser.parseColonType(srcTy))
+  if (parser.parseColonType(srcTy) || parser.parseComma() || parser.parseType(idxTy))
     return failure();
   if (hasTmp) {
     if (parser.parseComma() || parser.parseType(tmpTy))
@@ -5215,38 +5564,38 @@ ParseResult mlir::pto::TSort32Op::parse(OpAsmParser &parser, OperationState &res
     return failure();
 
   if (parser.parseKeyword("outs") || parser.parseLParen() ||
-      parser.parseOperand(dst) || parser.parseComma() || parser.parseOperand(idx) ||
-      parser.parseColonType(dstTy) || parser.parseComma() || parser.parseType(idxTy) ||
+      parser.parseOperand(dst) || parser.parseColonType(dstTy) ||
       parser.parseRParen())
     return failure();
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
 
   if (parser.resolveOperand(src, srcTy, result.operands) ||
-      parser.resolveOperand(dst, dstTy, result.operands) ||
       parser.resolveOperand(idx, idxTy, result.operands))
     return failure();
   if (hasTmp) {
     if (parser.resolveOperand(tmp, tmpTy, result.operands))
       return failure();
   }
+  if (parser.resolveOperand(dst, dstTy, result.operands))
+    return failure();
 
   result.addAttribute(
       "operandSegmentSizes",
-      parser.getBuilder().getDenseI32ArrayAttr({1, 1, 1, hasTmp ? 1 : 0}));
+      parser.getBuilder().getDenseI32ArrayAttr({1, 1, hasTmp ? 1 : 0, 1}));
   return success();
 }
 
 void mlir::pto::TSort32Op::print(OpAsmPrinter &p) {
-  p << " ins(" << getSrc();
+  p << " ins(" << getSrc() << ", " << getIdx();
   if (getTmp()) {
     p << ", " << getTmp();
-    p << " : " << getSrc().getType() << ", " << getTmp().getType() << ")";
+    p << " : " << getSrc().getType() << ", " << getIdx().getType()
+      << ", " << getTmp().getType() << ")";
   } else {
-    p << " : " << getSrc().getType() << ")";
+    p << " : " << getSrc().getType() << ", " << getIdx().getType() << ")";
   }
-  p << " outs(" << getDst() << ", " << getIdx()
-    << " : " << getDst().getType() << ", " << getIdx().getType() << ")";
+  p << " outs(" << getDst() << " : " << getDst().getType() << ")";
   p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"operandSegmentSizes"});
 }
 
@@ -5876,8 +6225,6 @@ mlir::LogicalResult mlir::pto::TSelSOp::verify() {
     return success();
   };
 
-  if (!isa<IntegerType>(getScalar().getType()))
-    return emitOpError("expects scalar to be an integer type");
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
@@ -7411,10 +7758,12 @@ PTO_DEFINE_UNARY_EFFECTS(TFillPadExpandOp, getSrcMutable(), getDstMutable())
 void TGatherOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrcMutable());
-  auto indices = getIndicesMutable();
-  if (!indices.empty()) {
+  if (auto cdst = getCdstMutable(); !cdst.empty())
+    PTO_ADD_WRITE(cdst[0]);
+  if (auto indices = getIndicesMutable(); !indices.empty())
     PTO_ADD_READ(indices[0]);
-  }
+  if (auto tmp = getTmpMutable(); !tmp.empty())
+    PTO_ADD_READ(tmp[0]);
   PTO_ADD_WRITE(getDstMutable());
 }
 
@@ -7549,15 +7898,15 @@ PTO_DEFINE_BINARY_EFFECTS(TShrOp, getSrc0Mutable(), getSrc1Mutable(), getDstMuta
 PTO_DEFINE_UNARY_EFFECTS(TShlSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TShrSOp, getSrcMutable(), getDstMutable())
 
-// TSORT32: Read(src) -> Write(dst, idx [, tmp])
+// TSORT32: Read(src, idx) -> Write(dst [, tmp])
 void TSort32Op::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrcMutable());
-  PTO_ADD_WRITE(getDstMutable());
-  PTO_ADD_WRITE(getIdxMutable());
+  PTO_ADD_READ(getIdxMutable());
   auto tmp = getTmpMutable();
   if (!tmp.empty())
     PTO_ADD_WRITE(tmp[0]);
+  PTO_ADD_WRITE(getDstMutable());
 }
 
 PTO_DEFINE_UNARY_EFFECTS(TSqrtOp, getSrcMutable(), getDstMutable())
@@ -7838,8 +8187,8 @@ static LogicalResult verifyFrontendSplitOp(Operation *op,
 static LogicalResult verifyPipeShape(Operation *op, int8_t dirMask, int32_t slotSize,
                                      int32_t slotNum,
                                      std::optional<int32_t> flagBase) {
-  if (dirMask != 1 && dirMask != 2)
-    return op->emitOpError("expects 'dir_mask' to be 1 or 2");
+  if (dirMask != 1 && dirMask != 2 && dirMask != 3)
+    return op->emitOpError("expects 'dir_mask' to be 1, 2, or 3");
   if (slotSize <= 0)
     return op->emitOpError("expects 'slot_size' to be greater than 0");
   if (slotNum != 4 && slotNum != 8)
@@ -7917,15 +8266,26 @@ LogicalResult InitializeL2G2LPipeOp::verify() {
           "expects 'local_slot_num' to be less than or equal to slot_num");
   }
 
+  if (getDirMask() == 3 && !getPeerLocalAddr())
+    return emitOpError("expects 'peer_local_addr' when dir_mask is 3");
+  if (getDirMask() != 3 && getPeerLocalAddr())
+    return emitOpError("'peer_local_addr' is only allowed when dir_mask is 3");
   return success();
 }
 
 LogicalResult InitializeL2LPipeOp::verify() {
-  return verifyPipeShape(getOperation(), getDirMask(), getSlotSize(),
-                         getSlotNum(),
-                         getFlagBaseAttr()
-                             ? std::optional<int32_t>(getFlagBaseAttr().getInt())
-                             : std::nullopt);
+  if (failed(verifyPipeShape(getOperation(), getDirMask(), getSlotSize(),
+                              getSlotNum(),
+                              getFlagBaseAttr()
+                                  ? std::optional<int32_t>(getFlagBaseAttr().getInt())
+                                  : std::nullopt)))
+    return failure();
+
+  if (getDirMask() == 3 && !getPeerLocalAddr())
+    return emitOpError("expects 'peer_local_addr' when dir_mask is 3");
+  if (getDirMask() != 3 && getPeerLocalAddr())
+    return emitOpError("'peer_local_addr' is only allowed when dir_mask is 3");
+  return success();
 }
 
 LogicalResult TPushOp::verify() {
@@ -7948,7 +8308,8 @@ LogicalResult TPopOp::verify() {
   if (failed(verifySplitAttr(getOperation(), getSplit())))
     return failure();
   if (getPipe() == pto::PIPE::PIPE_UNASSIGNED)
-    return emitOpError("pipe_handle must map to a supported consumer pipe");
+    return emitOpError(
+        "tile type and target arch must map to a supported consumer pipe");
   return success();
 }
 
