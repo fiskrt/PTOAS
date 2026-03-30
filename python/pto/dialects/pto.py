@@ -58,8 +58,6 @@ EVENT = _pto_mod.EVENT
 EventAttr = _pto_mod.EventAttr
 MaskPattern = _pto_mod.MaskPattern
 MaskPatternAttr = _pto_mod.MaskPatternAttr
-QuantType = _pto_mod.QuantType
-QuantTypeAttr = _pto_mod.QuantTypeAttr
 
 __all__ = [
     # Dialect utilities
@@ -82,7 +80,6 @@ __all__ = [
     "SyncOpType", "SyncOpTypeAttr",
     "EVENT", "EventAttr",
     "MaskPattern", "MaskPatternAttr",
-    "QuantType", "QuantTypeAttr",
     "TileBufConfigAttr",
     "TileConfig",
     # High-level sync helpers

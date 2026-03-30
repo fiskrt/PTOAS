@@ -378,36 +378,6 @@ PYBIND11_MODULE(_pto, m) {
             return mlirPTOEventAttrGetValue(self);
           });
 
-    py::enum_<mlir::pto::QuantType>(m, "QuantType")
-      .value("INT8_SYM",  mlir::pto::QuantType::INT8_SYM)
-      .value("INT8_ASYM", mlir::pto::QuantType::INT8_ASYM)
-      .export_values();
-
-    mlir_attribute_subclass(
-        m, "QuantTypeAttr",
-        [](MlirAttribute a) { return mlirPTOAttrIsAQuantTypeAttr(a); })
-      .def_classmethod(
-          "get",
-          [](py::object cls, py::object value, MlirContext ctx) -> py::object {
-            int32_t v = 0;
-            if (py::isinstance<py::int_>(value)) {
-              v = py::cast<int32_t>(value);
-            } else if (py::hasattr(value, "value")) {
-              v = value.attr("value").cast<int32_t>();
-            } else {
-              throw std::runtime_error("QuantTypeAttr.get expects int or QuantType enum");
-            }
-            MlirAttribute a = mlirPTOQuantTypeAttrGet(ctx, v);
-            if (mlirAttributeIsNull(a)) return py::none();
-            return cls.attr("__call__")(a);
-          },
-          py::arg("cls"), py::arg("value"), py::arg("context") = py::none())
-      .def_property_readonly(
-          "value",
-          [](MlirAttribute self) -> int32_t {
-            return mlirPTOQuantTypeAttrGetValue(self);
-          });
-
     mlir_attribute_subclass(
         m, "MaskPatternAttr",
         [](MlirAttribute a) { return mlirPTOAttrIsAMaskPatternAttr(a); })

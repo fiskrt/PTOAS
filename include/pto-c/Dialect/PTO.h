@@ -157,11 +157,6 @@ MLIR_CAPI_EXPORTED MlirType mlirPTOTileBufTypeGetWithValidShapeAndConfig(
     MlirAttribute memorySpace, intptr_t validRank, const int64_t *validShape,
     MlirAttribute config);
 
-// ---- QuantType attr ----
-MLIR_CAPI_EXPORTED MlirAttribute mlirPTOQuantTypeAttrGet(MlirContext ctx, int32_t value);
-MLIR_CAPI_EXPORTED bool mlirPTOAttrIsAQuantTypeAttr(MlirAttribute attr);
-MLIR_CAPI_EXPORTED int32_t mlirPTOQuantTypeAttrGetValue(MlirAttribute attr);
-
 // ---- MemRef helpers ----
 MLIR_CAPI_EXPORTED MlirType mlirPTOGMTypeGet(
     MlirContext ctx, intptr_t rank, const int64_t *shape, MlirType elementType);
