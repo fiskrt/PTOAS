@@ -358,6 +358,21 @@ MlirAttribute mlirPTOEventAttrGet(MlirContext ctx, int32_t value) {
   return wrap(mlir::pto::EventAttr::get(c, v));
 }
 
+MlirAttribute mlirPTOQuantTypeAttrGet(MlirContext ctx, int32_t value) {
+  auto *c = unwrap(ctx);
+  auto v = static_cast<mlir::pto::QuantType>(value);
+  return wrap(mlir::pto::QuantTypeAttr::get(c, v));
+}
+
+bool mlirPTOAttrIsAQuantTypeAttr(MlirAttribute attr) {
+  return mlir::isa<mlir::pto::QuantTypeAttr>(unwrap(attr));
+}
+
+int32_t mlirPTOQuantTypeAttrGetValue(MlirAttribute attr) {
+  auto a = mlir::cast<mlir::pto::QuantTypeAttr>(unwrap(attr));
+  return static_cast<int32_t>(a.getValue());
+}
+
 bool mlirPTOAttrIsAEventAttr(MlirAttribute attr) {
   return mlir::isa<mlir::pto::EventAttr>(unwrap(attr));
 }
