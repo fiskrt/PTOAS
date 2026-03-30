@@ -141,8 +141,52 @@ collect_dylibs() {
   done < <(otool -L "$bin" | awk 'NR>1 {print $1}')
 }
 
+packaged_dep_ref() {
+  local owner="$1"
+  local dep_base="$2"
+  case "$owner" in
+    "${PTOAS_DIST_DIR}/bin/"*)
+      echo "@loader_path/../lib/${dep_base}"
+      ;;
+    "${PTOAS_DEPS_DIR}/"*)
+      echo "@loader_path/${dep_base}"
+      ;;
+    *)
+      echo "@loader_path/${dep_base}"
+      ;;
+  esac
+}
+
+rewrite_packaged_install_names() {
+  local target dep base replacement
+  while IFS= read -r target; do
+    while IFS= read -r dep; do
+      [ -n "$dep" ] || continue
+      case "$dep" in
+        @loader_path/*|@rpath/*|@executable_path/*|/usr/lib/*|/System/Library/*)
+          continue
+          ;;
+      esac
+
+      base="$(basename "$dep")"
+      if [ ! -f "${PTOAS_DEPS_DIR}/${base}" ]; then
+        continue
+      fi
+
+      replacement="$(packaged_dep_ref "$target" "$base")"
+      if [ "$dep" != "$replacement" ]; then
+        echo "rewrite install name: ${target} :: ${dep} -> ${replacement}"
+        install_name_tool -change "$dep" "$replacement" "$target"
+      fi
+    done < <(otool -L "$target" | awk 'NR>1 {print $1}')
+  done < <(find "${PTOAS_DIST_DIR}/bin" "${PTOAS_DEPS_DIR}" -type f \( -name 'ptoas' -o -name '*.dylib' \))
+}
+
 echo "Collecting dylib dependencies..."
 collect_dylibs "${PTOAS_DIST_DIR}/bin/ptoas"
+
+echo "Rewriting packaged install names..."
+rewrite_packaged_install_names
 
 echo "Validating packaged dependency install names..."
 if ! python3 - "${PTOAS_DIST_DIR}" <<'PY'
