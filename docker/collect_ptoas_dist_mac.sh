@@ -141,45 +141,96 @@ collect_dylibs() {
   done < <(otool -L "$bin" | awk 'NR>1 {print $1}')
 }
 
-packaged_dep_ref() {
-  local owner="$1"
-  local dep_base="$2"
-  case "$owner" in
-    "${PTOAS_DIST_DIR}/bin/"*)
-      echo "@loader_path/../lib/${dep_base}"
-      ;;
-    "${PTOAS_DEPS_DIR}/"*)
-      echo "@loader_path/${dep_base}"
-      ;;
-    *)
-      echo "@loader_path/${dep_base}"
-      ;;
-  esac
-}
-
 rewrite_packaged_install_names() {
-  local target dep base replacement
-  while IFS= read -r target; do
-    while IFS= read -r dep; do
-      [ -n "$dep" ] || continue
-      case "$dep" in
-        @loader_path/*|@rpath/*|@executable_path/*|/usr/lib/*|/System/Library/*)
-          continue
-          ;;
-      esac
+  python3 - "${PTOAS_DIST_DIR}" "${PTOAS_DEPS_DIR}" <<'PY'
+import os
+import subprocess
+import sys
+from pathlib import Path
 
-      base="$(basename "$dep")"
-      if [ ! -f "${PTOAS_DEPS_DIR}/${base}" ]; then
-        continue
-      fi
+dist_dir = Path(sys.argv[1]).resolve()
+deps_dir = Path(sys.argv[2]).resolve()
+bin_dir = (dist_dir / "bin").resolve()
+allowed_prefixes = (
+    "@loader_path/",
+    "@rpath/",
+    "@executable_path/",
+    "/usr/lib/",
+    "/System/Library/",
+)
 
-      replacement="$(packaged_dep_ref "$target" "$base")"
-      if [ "$dep" != "$replacement" ]; then
-        echo "rewrite install name: ${target} :: ${dep} -> ${replacement}"
-        install_name_tool -change "$dep" "$replacement" "$target"
-      fi
-    done < <(otool -L "$target" | awk 'NR>1 {print $1}')
-  done < <(find "${PTOAS_DIST_DIR}/bin" "${PTOAS_DEPS_DIR}" -type f \( -name 'ptoas' -o -name '*.dylib' \))
+
+def is_under(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def packaged_dep_ref(owner: Path, dep_base: str) -> str:
+    if is_under(owner, bin_dir):
+        return f"@loader_path/../lib/{dep_base}"
+    if is_under(owner, deps_dir):
+        return f"@loader_path/{dep_base}"
+    return f"@loader_path/{dep_base}"
+
+
+def iter_targets():
+    for root in (bin_dir, deps_dir):
+        if not root.exists():
+            continue
+        for base, _, files in os.walk(root):
+            for name in sorted(files):
+                if name == "ptoas" or name.endswith(".dylib"):
+                    yield Path(base, name).resolve()
+
+
+def iter_deps(target: Path):
+    try:
+        output = subprocess.check_output(
+            ["otool", "-L", str(target)],
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        sys.stderr.write(
+            f"ERROR: failed to inspect install names for {target}: "
+            f"{exc.output.strip()}\n"
+        )
+        raise SystemExit(exc.returncode or 1)
+
+    for line in output.splitlines()[1:]:
+        dep = line.strip().split(" ", 1)[0]
+        if dep:
+            yield dep
+
+
+for target in iter_targets():
+    for dep in iter_deps(target):
+        if dep.startswith(allowed_prefixes):
+            continue
+
+        dep_base = os.path.basename(dep)
+        if not (deps_dir / dep_base).is_file():
+            continue
+
+        replacement = packaged_dep_ref(target, dep_base)
+        if dep == replacement:
+            continue
+
+        print(f"rewrite install name: {target} :: {dep} -> {replacement}")
+        try:
+            subprocess.check_call(
+                ["install_name_tool", "-change", dep, replacement, str(target)]
+            )
+        except subprocess.CalledProcessError as exc:
+            sys.stderr.write(
+                f"ERROR: failed to rewrite install name for {target}: {dep} -> "
+                f"{replacement} (exit {exc.returncode})\n"
+            )
+            raise SystemExit(exc.returncode or 1)
+PY
 }
 
 echo "Collecting dylib dependencies..."
