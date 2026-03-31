@@ -1553,7 +1553,19 @@ LogicalResult mlir::pto::SyncSetOp::verify() {
       return emitOpError() << "requires ffts_mode in range [0, 2], but got "
                            << fftsMode;
   }
-  return success();
+
+  auto verifyA2A3 = [&]() -> LogicalResult { return success(); };
+  auto verifyA5 = [&]() -> LogicalResult {
+    switch (getPipe().getPipe()) {
+    case PIPE::PIPE_FIX:
+    case PIPE::PIPE_MTE3:
+      return success();
+    default:
+      return emitOpError()
+             << "A5 sync.set expects pipe to be one of <PIPE_FIX>, <PIPE_MTE3>";
+    }
+  };
+  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
 ParseResult mlir::pto::SyncWaitOp::parse(OpAsmParser &parser,
@@ -1615,7 +1627,23 @@ LogicalResult mlir::pto::SyncWaitOp::verify() {
   if (hasStatic == hasDynamic)
     return emitOpError()
            << "expects exactly one event-id form: static attr or dynamic index operand";
-  return success();
+
+  auto verifyA2A3 = [&]() -> LogicalResult { return success(); };
+  auto verifyA5 = [&]() -> LogicalResult {
+    switch (getPipe().getPipe()) {
+    case PIPE::PIPE_FIX:
+    case PIPE::PIPE_MTE1:
+    case PIPE::PIPE_MTE2:
+    case PIPE::PIPE_MTE3:
+    case PIPE::PIPE_V:
+      return success();
+    default:
+      return emitOpError() << "A5 sync.wait expects pipe to be one of "
+                              "<PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE2>, "
+                              "<PIPE_MTE3>, <PIPE_V>";
+    }
+  };
+  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
 LogicalResult TStoreOp::verify() {

@@ -12,11 +12,10 @@ from mlir.ir import (
     F32Type,
     IndexType,
     InsertionPoint,
-    IntegerType,
     Location,
     Module,
 )
-from mlir.dialects import arith, func, pto, scf
+from mlir.dialects import arith, func, pto
 
 
 def build():
@@ -26,9 +25,8 @@ def build():
             module = Module.create()
             f32 = F32Type.get(ctx)
             idx = IndexType.get(ctx)
-            i32 = IntegerType.get_signless(32, ctx)
             ptr_f32 = pto.PtrType.get(f32, ctx)
-            fn_ty = func.FunctionType.get([ptr_f32, i32], [])
+            fn_ty = func.FunctionType.get([ptr_f32], [])
 
             with InsertionPoint(module.body):
                 fn = func.FuncOp("test_intercore_sync_a5", fn_ty)
@@ -36,21 +34,24 @@ def build():
 
             with InsertionPoint(entry):
                 c0 = arith.ConstantOp(idx, 0).result
-                c0_i32 = arith.ConstantOp(i32, 0).result
                 two = arith.ConstantOp(f32, 2.0).result
+                evt = 0
+                out = entry.arguments[0]
+                # PTO-ISA A5 mix-kernel style:
+                # cube producer -> vec consumer
+                # set: PIPE_FIX, wait: PIPE_MTE3.
+                pipe_fix = pto.PipeAttr.get(pto.PIPE.PIPE_FIX, ctx)
                 pipe_mte3 = pto.PipeAttr.get(pto.PIPE.PIPE_MTE3, ctx)
-                pipe_v = pto.PipeAttr.get(pto.PIPE.PIPE_V, ctx)
-                pto.sync_set(pipe_mte3, 5)
-                # Keep sync.wait in generated code shape checks, but avoid
-                # unconditional wait deadlock in single-core functional runs.
-                should_wait = arith.CmpIOp(
-                    arith.CmpIPredicate.eq, entry.arguments[1], c0_i32
-                ).result
-                if_op = scf.IfOp(should_wait, [], hasElse=False)
-                with InsertionPoint(if_op.then_block):
-                    pto.sync_wait(pipe_v, 5)
-                    scf.YieldOp([])
-                pto.store_scalar(entry.arguments[0], c0, two)
+
+                sec_cube = pto.SectionCubeOp()
+                with InsertionPoint(sec_cube.body.blocks.append()):
+                    pto.sync_set(pipe_fix, evt)
+
+                sec_vec = pto.SectionVectorOp()
+                with InsertionPoint(sec_vec.body.blocks.append()):
+                    pto.sync_wait(pipe_mte3, evt)
+                    pto.store_scalar(out, c0, two)
+
                 func.ReturnOp([])
 
             module.operation.verify()

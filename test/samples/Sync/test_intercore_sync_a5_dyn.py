@@ -27,14 +27,20 @@ def build():
 
             with InsertionPoint(entry):
                 c0 = arith.ConstantOp(idx, 0).result
-                c5 = arith.ConstantOp(idx, 5).result
+                c0_evt = arith.ConstantOp(idx, 0).result
                 two = arith.ConstantOp(f32, 2.0).result
+                out = entry.arguments[0]
+                pipe_fix = pto.PipeAttr.get(pto.PIPE.PIPE_FIX, ctx)
                 pipe_mte3 = pto.PipeAttr.get(pto.PIPE.PIPE_MTE3, ctx)
-                pipe_v = pto.PipeAttr.get(pto.PIPE.PIPE_V, ctx)
 
-                pto.sync_set(pipe_mte3, c5)
-                pto.sync_wait(pipe_v, c5)
-                pto.store_scalar(entry.arguments[0], c0, two)
+                sec_cube = pto.SectionCubeOp()
+                with InsertionPoint(sec_cube.body.blocks.append()):
+                    pto.sync_set(pipe_fix, c0_evt)
+
+                sec_vec = pto.SectionVectorOp()
+                with InsertionPoint(sec_vec.body.blocks.append()):
+                    pto.sync_wait(pipe_mte3, c0_evt)
+                    pto.store_scalar(out, c0, two)
                 func.ReturnOp([])
 
             module.operation.verify()

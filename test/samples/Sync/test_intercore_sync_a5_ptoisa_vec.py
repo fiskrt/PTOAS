@@ -23,29 +23,28 @@ def build():
             fn_ty = func.FunctionType.get([ptr_f32], [])
 
             with InsertionPoint(module.body):
-                fn = func.FuncOp("test_intercore_sync_a5_functional", fn_ty)
+                fn = func.FuncOp("test_intercore_sync_a5_ptoisa_vec", fn_ty)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):
                 out = entry.arguments[0]
-
                 c0_idx = arith.ConstantOp(idx, 0).result
                 c1_idx = arith.ConstantOp(idx, 1).result
                 c2 = arith.ConstantOp(f32, 2.0).result
-                evt = 0
 
-                # Reference PTO-ISA A5 mix-kernel style:
-                # cube producer (PIPE_FIX) -> vec consumer (PIPE_MTE3).
+                # PTO-ISA tmov_acc2vec/tmov_ub2l1 mix-kernel style:
+                # cube sets PIPE_FIX(syncId + syncId+16), vec waits PIPE_MTE3(syncId).
+                sync_id = 0
                 pipe_fix = pto.PipeAttr.get(pto.PIPE.PIPE_FIX, ctx)
                 pipe_mte3 = pto.PipeAttr.get(pto.PIPE.PIPE_MTE3, ctx)
 
                 sec_cube = pto.SectionCubeOp()
                 with InsertionPoint(sec_cube.body.blocks.append()):
-                    pto.sync_set(pipe_fix, evt)
+                    pto.sync_set(pipe_fix, sync_id)
 
                 sec_vec = pto.SectionVectorOp()
                 with InsertionPoint(sec_vec.body.blocks.append()):
-                    pto.sync_wait(pipe_mte3, evt)
+                    pto.sync_wait(pipe_mte3, sync_id)
                     pto.store_scalar(out, c0_idx, c2)
                     pto.store_scalar(out, c1_idx, c2)
 
