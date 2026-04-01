@@ -37,3 +37,4 @@ grep -F "pto.trowexpanddiv ins(" "${ROUNDTRIP}" >/dev/null
 grep -F "pto.trowexpandmul ins(" "${ROUNDTRIP}" >/dev/null
 grep -F "pto.trsqrt ins(" "${ROUNDTRIP}" >/dev/null
 grep -E "pto\\.trsqrt ins\\(%[^,]+, %[^:]+ :" "${ROUNDTRIP}" >/dev/null
+grep -F "pto.tpartmul ins(" "${ROUNDTRIP}" >/dev/null

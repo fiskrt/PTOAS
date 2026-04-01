@@ -3561,6 +3561,38 @@ def TPartMinOp: PTO_TOp<"tpartmin", [
   }];
 }
 //===----------------------------------------------------------------------===//
+// PTOOps.td  (add TPARTMUL TBDPS/tile buffer op)
+//===----------------------------------------------------------------------===//
+
+def TPartMulOp: PTO_TOp<"tpartmul", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Partial elementwise mul with implementation-defined handling of mismatched valid regions.";
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
+    `outs` `(` $dst `:` qualified(type($dst) ) `)`
+    attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+//===----------------------------------------------------------------------===//
 // PTOOps.td  (add TPRELU TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 

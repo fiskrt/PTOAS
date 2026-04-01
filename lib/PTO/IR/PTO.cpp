@@ -5144,6 +5144,60 @@ mlir::LogicalResult mlir::pto::TPartMinOp::verify() {
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
+mlir::LogicalResult mlir::pto::TPartMulOp::verify() {
+  auto verifyA2A3 = [&]() -> LogicalResult {
+    Type src0Ty = getSrc0().getType();
+    Type src1Ty = getSrc1().getType();
+    Type dstTy = getDst().getType();
+    if (!isPTOShapedLike(src0Ty) || !isPTOShapedLike(src1Ty) ||
+        !isPTOShapedLike(dstTy))
+      return emitOpError() << "expects PTO shaped-like src0/src1/dst";
+    if (getElemTy(src0Ty) != getElemTy(src1Ty) ||
+        getElemTy(src0Ty) != getElemTy(dstTy))
+      return emitOpError()
+             << "expects src0/src1/dst to have the same element type";
+    auto s0 = getShapeVec(src0Ty);
+    auto s1 = getShapeVec(src1Ty);
+    auto d = getShapeVec(dstTy);
+    if (s0.size() != 2 || s1.size() != 2 || d.size() != 2)
+      return emitOpError()
+             << "expects src0/src1/dst to be rank-2 (tile-shaped)";
+    if (failed(verifyPartialValidPattern(*this, src0Ty, src1Ty, dstTy)))
+      return failure();
+    Type elem = getElemTy(src0Ty);
+    if (!(elem.isInteger(32) || elem.isInteger(16) || elem.isF16() ||
+          elem.isF32()))
+      return emitOpError(
+          "expects A2/A3 tpartmul element type to be i32/i16/f16/f32");
+    return mlir::success();
+  };
+  auto verifyA5 = [&]() -> LogicalResult {
+    Type src0Ty = getSrc0().getType();
+    Type src1Ty = getSrc1().getType();
+    Type dstTy = getDst().getType();
+    if (!isPTOShapedLike(src0Ty) || !isPTOShapedLike(src1Ty) ||
+        !isPTOShapedLike(dstTy))
+      return emitOpError() << "expects PTO shaped-like src0/src1/dst";
+    if (getElemTy(src0Ty) != getElemTy(src1Ty) ||
+        getElemTy(src0Ty) != getElemTy(dstTy))
+      return emitOpError()
+             << "expects src0/src1/dst to have the same element type";
+    Type elem = getElemTy(src0Ty);
+    if (!(elem.isInteger(32) || elem.isInteger(16) || elem.isInteger(8) ||
+          elem.isF16() || elem.isBF16() || elem.isF32()))
+      return emitOpError(
+          "expects A5 tpartmul element type to be i32/i16/i8/f16/bf16/f32");
+    auto s0 = getShapeVec(src0Ty);
+    auto s1 = getShapeVec(src1Ty);
+    auto d = getShapeVec(dstTy);
+    if (s0.size() != 2 || s1.size() != 2 || d.size() != 2)
+      return emitOpError()
+             << "expects src0/src1/dst to be rank-2 (tile-shaped)";
+    return mlir::success();
+  };
+  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
+}
+
 mlir::LogicalResult mlir::pto::TPReluOp::verify() {
   if (shouldBypassDecodedMemrefVerifier(getOperation()))
     return success();
@@ -8057,6 +8111,7 @@ PTO_DEFINE_UNARY_EFFECTS(TOrSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartAddOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartMaxOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartMinOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+PTO_DEFINE_BINARY_EFFECTS(TPartMulOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 // TPRELU: Read(src0, src1) -> Write(tmp, dst)
 void TPReluOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {

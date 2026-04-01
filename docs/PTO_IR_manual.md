@@ -1418,6 +1418,7 @@ All vector arithmetic operations execute on the **Vector pipeline** (`PIPE_V`) a
 | `pto.tpartadd` | Partial elementwise add |
 | `pto.tpartmax` | Partial elementwise max |
 | `pto.tpartmin` | Partial elementwise min |
+| `pto.tpartmul` | Partial elementwise mul |
 | `pto.tprelu` | `dst[i,j] = src0[i,j] > 0 ? src0[i,j] : src1[i,j] * src0[i,j]` |
 
 ---
@@ -2019,6 +2020,60 @@ The valid region is the intersection of each tile's valid rectangle defined by `
 
 ```mlir
 pto.tpartmin ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
+                 v_row=16, v_col=32, blayout=row_major, slayout=none_box,
+                 fractal=512, pad=0>,
+                 !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
+                 v_row=32, v_col=16, blayout=row_major, slayout=none_box,
+                 fractal=512, pad=0>)
+             outs(%c : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
+                 v_row=32, v_col=32, blayout=row_major, slayout=none_box,
+                 fractal=512, pad=0>)
+```
+
+---
+
+##### `pto.tpartmul` - Partial Elementwise Mul
+
+**Summary:** Partial elementwise mul with implementation-defined handling of mismatched valid regions.
+
+**Semantics:**
+
+```
+For each element (i, j) in the valid region:
+    dst[i, j] = src0[i, j] * src1[i, j]
+```
+
+The valid region is the intersection of each tile's valid rectangle defined by `v_row`/`v_col`; elements outside a tile's valid rectangle are padding/undefined.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src0` | `pto.tile_buf` | First source tile buffer |
+| `src1` | `pto.tile_buf` | Second source tile buffer |
+| `dst` | `pto.tile_buf` | Destination tile buffer |
+
+**Results:** None. Writes into `dst` via DPS pattern.
+
+**Constraints & Verification:**
+
+- **Implementation checks (A2A3)**
+  - `dst/src0/src1` element types must be identical, and must be one of: `i32`, `i16`, `f16`, `f32`.
+  - All three tiles must use row-major layout (`blayout=row_major`).
+  - The implementation requires at least one input's valid region to match `dst`'s valid region, and the other input's valid region not greater than `dst`'s valid region (otherwise it asserts).
+- **Implementation checks (A5)**
+  - `dst/src0/src1` element types must be identical and must be one of: `i8`, `i16`, `i32`, `f16`, `bf16`, `f32`.
+  - Requires `src0` and `src1` valid region to be `<= dst` valid region in both dimensions; other patterns are not supported (target-defined behavior).
+
+**Hardware Mapping:**
+
+- Executes on the **Vector pipeline** (`PIPE_V`)
+- Operates on data in the **VEC (UB)** memory space
+
+**Basic Example:**
+
+```mlir
+pto.tpartmul ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
                  v_row=16, v_col=32, blayout=row_major, slayout=none_box,
                  fractal=512, pad=0>,
                  !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
