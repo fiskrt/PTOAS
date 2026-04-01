@@ -1596,6 +1596,29 @@ def DeclareTileOp : PTO_Op<"declare_tile", [Pure]> {
   }];
 }
 
+def TAssignOp : PTO_Op<"tassign", [Pure]> {
+  let summary = "Rebind a declared tile handle to a runtime address";
+  let description = [{
+    Rebinds an existing tile handle to a new address. This op is intended for
+    manual synchronization workflows (for example, rebinding inside loops while
+    keeping the tile declaration outside the loop).
+  }];
+
+  let arguments = (ins
+    PTODpsType:$tile,
+    I64:$addr
+  );
+  let results = (outs PTODpsType:$result);
+
+  let assemblyFormat = [{
+    $tile `,` $addr attr-dict `:` qualified(type($tile)) `->` qualified(type($result))
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::LogicalResult verify();
+  }];
+}
+
 def DeclareEventIdArrayOp : PTO_Op<"declare_eventid_array"> {
   let summary = "Declare a manual-only local event-id array";
   let description = [{

@@ -635,7 +635,7 @@ struct PTOViewToMemrefPass
           continue;
         }
 
-        // 7. Otherwise, allocate a concrete memref buffer and bind metadata.
+        // 7. Otherwise allocate a concrete memref buffer and bind tile.
         // memref.alloc 要求明确的 layout，不能是动态 offset。
         auto allocLayout = StridedLayoutAttr::get(ctx, 0, strides); // offset = 0
         auto allocType = MemRefType::get(shape, elemTy, allocLayout, tbTy.getMemorySpace());
@@ -706,6 +706,24 @@ struct PTOViewToMemrefPass
         markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
 
         rewriter.replaceOp(op, bindOp.getResult());
+      }
+
+      // ------------------------------------------------------------------
+      // Stage 0.8: normalize pto.tassign result type to match tile operand
+      // after tile_buf -> memref lowering (required for verifier consistency).
+      // ------------------------------------------------------------------
+      SmallVector<mlir::pto::TAssignOp, 8> tassignOps;
+      func.walk([&](mlir::pto::TAssignOp op) { tassignOps.push_back(op); });
+      for (auto op : tassignOps) {
+        Type targetTy = op.getTile().getType();
+        if (op.getResult().getType() == targetTy)
+          continue;
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        auto normalized =
+            rewriter.create<pto::TAssignOp>(op.getLoc(), targetTy, op.getTile(),
+                                            op.getAddr());
+        rewriter.replaceOp(op, normalized.getResult());
       }
 
       // ------------------------------------------------------------------

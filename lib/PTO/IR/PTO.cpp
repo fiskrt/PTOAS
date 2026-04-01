@@ -1400,6 +1400,13 @@ LogicalResult AllocTileOp::verify() {
   return success();
 }
 
+LogicalResult TAssignOp::verify() {
+  if (getTile().getType() != getResult().getType()) {
+    return emitOpError("result type must match tile operand type");
+  }
+  return success();
+}
+
 LogicalResult TLoadOp::verify() {
   auto verifyCommon = [&]() -> FailureOr<std::pair<pto::PartitionTensorViewType, pto::TileBufType>> {
     auto srcPart = dyn_cast<pto::PartitionTensorViewType>(getSrc().getType());
