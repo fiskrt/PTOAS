@@ -6850,62 +6850,6 @@ struct PTOTGemvBiasToTGEMV_BIAS
   }
 };
 
-struct PTOTGemvMXToTGEMV_MX
-    : public OpConversionPattern<pto::TGemvMxOp> {
-  using OpConversionPattern<pto::TGemvMxOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::TGemvMxOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    Value a       = peelUnrealized(adaptor.getA());
-    Value aScale  = peelUnrealized(adaptor.getAScale());
-    Value b       = peelUnrealized(adaptor.getB());
-    Value bScale  = peelUnrealized(adaptor.getBScale());
-    Value dst     = peelUnrealized(adaptor.getDst());
-
-    replaceOrEraseWithOpaqueCall(op.getOperation(), "TGEMV_MX",
-                                {dst, a, aScale, b, bScale}, rewriter);
-    return success();
-  }
-};
-
-struct PTOTGemvMXAccToTGEMV_MX
-    : public OpConversionPattern<pto::TGemvMxAccOp> {
-  using OpConversionPattern<pto::TGemvMxAccOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::TGemvMxAccOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    Value cIn     = peelUnrealized(adaptor.getCIn());
-    Value a       = peelUnrealized(adaptor.getA());
-    Value aScale  = peelUnrealized(adaptor.getAScale());
-    Value b       = peelUnrealized(adaptor.getB());
-    Value bScale  = peelUnrealized(adaptor.getBScale());
-    Value dst     = peelUnrealized(adaptor.getDst());
-
-    replaceOrEraseWithOpaqueCall(op.getOperation(), "TGEMV_MX",
-                                {dst, cIn, a, aScale, b, bScale}, rewriter);
-    return success();
-  }
-};
-
-struct PTOTGemvMXBiasToTGEMV_MX
-    : public OpConversionPattern<pto::TGemvMxBiasOp> {
-  using OpConversionPattern<pto::TGemvMxBiasOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::TGemvMxBiasOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    Value a       = peelUnrealized(adaptor.getA());
-    Value aScale  = peelUnrealized(adaptor.getAScale());
-    Value b       = peelUnrealized(adaptor.getB());
-    Value bScale  = peelUnrealized(adaptor.getBScale());
-    Value bias    = peelUnrealized(adaptor.getBias());
-    Value dst     = peelUnrealized(adaptor.getDst());
-
-    replaceOrEraseWithOpaqueCall(op.getOperation(), "TGEMV_MX",
-                                {dst, a, aScale, b, bScale, bias}, rewriter);
-    return success();
-  }
-};
-
 struct PTOTMatmulBiasToTMATMUL_BIAS
     : public OpConversionPattern<pto::TMatmulBiasOp> {
   using OpConversionPattern<pto::TMatmulBiasOp>::OpConversionPattern;
@@ -8812,9 +8756,6 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
     PTOTMatmulMXAccToTMATMUL_MX_ACC,
     PTOTMatmulMXBiasToTMATMUL_MX_BIAS,
     PTOTGemvBiasToTGEMV_BIAS,
-    PTOTGemvMXToTGEMV_MX,
-    PTOTGemvMXAccToTGEMV_MX,
-    PTOTGemvMXBiasToTGEMV_MX,
     PTOBarrierToEmitC
   >(typeConverter, ctx);
 
