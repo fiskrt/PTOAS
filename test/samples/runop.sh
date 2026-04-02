@@ -153,6 +153,12 @@ process_one_dir() {
   if [[ "${ENABLE_BC}" == "1" ]]; then
     use_ptobc_roundtrip=1
   fi
+  # Qwen3 scope2 kernels currently serve as direct ptoas compile-regression
+  # coverage. They require A5/level3 lowering, but are not expected to
+  # roundtrip through ptobc yet.
+  if [[ "$A" == "Qwen3Scope2" ]]; then
+    use_ptobc_roundtrip=0
+  fi
   local -a ptoas_flags=()
   if [[ -n "${PTOAS_FLAGS}" ]]; then
     # shellcheck disable=SC2206
@@ -910,7 +916,6 @@ PY
       if [[ "$base" == "test_if_else_tile_result" ]]; then
         sample_use_ptobc_roundtrip=0
       fi
-
       if [[ $sample_use_ptobc_roundtrip -eq 1 ]]; then
         # Allow generic escape for ops that are not yet in the compact v0 opcode table.
         if ! PTOBC_ALLOW_GENERIC=1 "$ptobc" encode "$f" -o "$ptobc_file" >/dev/null 2>&1; then
