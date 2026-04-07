@@ -16,7 +16,6 @@ module attributes {pto.target_arch = "a5"} {
   %c128 = arith.constant 128 : index
   %cst_1 = arith.constant 1.953125e-04 : f32
   %cst_2 = arith.constant 1.000000e-06 : f32
-  %cdbg_tail = arith.constant 999 : i32
   %hidden_states__ssa_v0_view = pto.make_tensor_view %arg0, shape = [%c16, %c5120], strides = [%c5120, %c1] {layout = #pto.layout<nd>}: !pto.tensor_view<?x?xbf16>
   %input_rms_weight__ssa_v0_view = pto.make_tensor_view %arg1, shape = [%c1, %c5120], strides = [%c5120, %c1] {layout = #pto.layout<nd>}: !pto.tensor_view<?x?xf32>
   %normed_out__iter_v1_view = pto.make_tensor_view %arg2, shape = [%c16, %c5120], strides = [%c5120, %c1] {layout = #pto.layout<nd>}: !pto.tensor_view<?x?xbf16>
@@ -86,7 +85,6 @@ module attributes {pto.target_arch = "a5"} {
     pto.tstore ins(%7 : !pto.tile_buf<loc=vec, dtype=bf16, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%normed_out__iter_v3_pview : !pto.partition_tensor_view<16x128xbf16>)
     pto.barrier <PIPE_ALL>
   }
-  pto.print ins("dbg tail=%d", %cdbg_tail : i32)
   return
   }
 }
