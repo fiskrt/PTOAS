@@ -30,16 +30,13 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/.git")
 endif()
 
 set(PTOAS_CLI_VERSION "${PROJECT_VERSION}")
-set(PTOAS_CLI_VERSION_SOURCE "project version")
 if(PTOAS_EXACT_GIT_TAG_VERSION)
   set(PTOAS_CLI_VERSION "${PTOAS_EXACT_GIT_TAG_VERSION}")
-  set(PTOAS_CLI_VERSION_SOURCE "exact git tag")
 endif()
 if(PTOAS_RELEASE_VERSION_OVERRIDE)
   set(PTOAS_CLI_VERSION "${PTOAS_RELEASE_VERSION_OVERRIDE}")
-  set(PTOAS_CLI_VERSION_SOURCE "release override")
 endif()
-message(STATUS "PTOAS CLI version: ${PTOAS_CLI_VERSION} (${PTOAS_CLI_VERSION_SOURCE})")
+message(STATUS "PTOAS CLI version: ${PTOAS_CLI_VERSION}")
 
 # =========================================================
 # [新增] 强制设置 C++17 标准 (LLVM 19 必需)
