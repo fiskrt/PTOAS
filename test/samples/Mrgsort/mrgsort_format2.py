@@ -7,12 +7,13 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 """
-TMrgSortOp format2: ins(src0..src3) outs(dst, tmp, excuted) with exhausted attr.
+TMrgSortOp format2: ins(src0..srcN) outs(dst, tmp, excuted) with exhausted attr,
+where N is 1, 2, or 3 (2-way / 3-way / 4-way merge).
 
 Important notes for on-device execution:
-  - pto-isa's TMRGSORT expects 4 input lists; leaving src1..src3 uninitialized
-    can lead to illegal configurations and runtime exceptions on NPU.
-  - This testcase therefore loads 4 independent GM inputs into src tiles.
+  - PTOAS now supports 2-way, 3-way, and 4-way merge forms.
+  - This testcase covers all three forms in a single function entry so it fits
+    the remote validation flow.
 """
 from mlir.ir import Context, Location, Module, InsertionPoint
 from mlir.dialects import func, arith, pto
@@ -42,13 +43,18 @@ def build():
             # 4 lists * 64 structures/list = 256 structures output.
             # 1 structure = 2 floats => 128 floats/list, 512 floats output.
             part_view_1x128 = pto.PartitionTensorViewType.get([1, 128], f32, ctx)
+            part_view_1x256 = pto.PartitionTensorViewType.get([1, 256], f32, ctx)
+            part_view_1x384 = pto.PartitionTensorViewType.get([1, 384], f32, ctx)
             part_view_1x512 = pto.PartitionTensorViewType.get([1, 512], f32, ctx)
+            part_view_1x1152 = pto.PartitionTensorViewType.get([1, 1152], f32, ctx)
             vec = pto.AddressSpaceAttr.get(pto.AddressSpace.VEC, ctx)
             bl = pto.BLayoutAttr.get(pto.BLayout.RowMajor, ctx)
             sl = pto.SLayoutAttr.get(pto.SLayout.NoneBox, ctx)
             pd = pto.PadValueAttr.get(pto.PadValue.Null, ctx)
             fractal_ab_size = pto.TileConfig.fractalABSize
             cfg = pto.TileBufConfigAttr.get(bl, sl, fractal_ab_size, pd, ctx)
+            tile_buf_1x256 = pto.TileBufType.get([1, 256], f32, vec, [1, 256], cfg, ctx)
+            tile_buf_1x384 = pto.TileBufType.get([1, 384], f32, vec, [1, 384], cfg, ctx)
             tile_buf_1x128 = pto.TileBufType.get([1, 128], f32, vec, [1, 128], cfg, ctx)
             tile_buf_1x512 = pto.TileBufType.get([1, 512], f32, vec, [1, 512], cfg, ctx)
 
@@ -64,7 +70,11 @@ def build():
                 c0 = arith.ConstantOp(IndexType.get(ctx), 0).result
                 c1 = arith.ConstantOp(IndexType.get(ctx), 1).result
                 c128 = arith.ConstantOp(IndexType.get(ctx), 128).result
+                c256 = arith.ConstantOp(IndexType.get(ctx), 256).result
+                c384 = arith.ConstantOp(IndexType.get(ctx), 384).result
                 c512 = arith.ConstantOp(IndexType.get(ctx), 512).result
+                c640 = arith.ConstantOp(IndexType.get(ctx), 640).result
+                c1152 = arith.ConstantOp(IndexType.get(ctx), 1152).result
 
                 arg0, arg1, arg2, arg3, arg_out, excuted = entry.arguments
 
@@ -73,37 +83,65 @@ def build():
                 tv1 = pto.MakeTensorViewOp(tv2_f32, arg1, [c1, c128], [c128, c1]).result
                 tv2 = pto.MakeTensorViewOp(tv2_f32, arg2, [c1, c128], [c128, c1]).result
                 tv3 = pto.MakeTensorViewOp(tv2_f32, arg3, [c1, c128], [c128, c1]).result
-                # Output: 1x512 (512 f32) for 256 packed structures.
-                tv_out = pto.MakeTensorViewOp(tv2_f32, arg_out, [c1, c512], [c512, c1]).result
+                # Output buffer holds:
+                #   2-way result: 1x256
+                #   3-way result: 1x384
+                #   4-way result: 1x512
+                # total = 1152 f32
+                tv_out = pto.MakeTensorViewOp(tv2_f32, arg_out, [c1, c1152], [c1152, c1]).result
 
                 sv0 = pto.PartitionViewOp(part_view_1x128, tv0, offsets=[c0, c0], sizes=[c1, c128]).result
                 sv1 = pto.PartitionViewOp(part_view_1x128, tv1, offsets=[c0, c0], sizes=[c1, c128]).result
                 sv2 = pto.PartitionViewOp(part_view_1x128, tv2, offsets=[c0, c0], sizes=[c1, c128]).result
                 sv3 = pto.PartitionViewOp(part_view_1x128, tv3, offsets=[c0, c0], sizes=[c1, c128]).result
 
-                # Format2: 4 src tiles + 2 dst tiles (dst + tmp) + 1 executed list.
+                # Format2 source tiles shared by all 2-way / 3-way / 4-way cases.
                 tb_s0 = pto.AllocTileOp(tile_buf_1x128).result
                 tb_s1 = pto.AllocTileOp(tile_buf_1x128).result
                 tb_s2 = pto.AllocTileOp(tile_buf_1x128).result
                 tb_s3 = pto.AllocTileOp(tile_buf_1x128).result
-                tb_dst = pto.AllocTileOp(tile_buf_1x512).result
-                tb_tmp = pto.AllocTileOp(tile_buf_1x512).result
+                tb_dst2 = pto.AllocTileOp(tile_buf_1x256).result
+                tb_tmp2 = pto.AllocTileOp(tile_buf_1x256).result
+                tb_dst3 = pto.AllocTileOp(tile_buf_1x384).result
+                tb_tmp3 = pto.AllocTileOp(tile_buf_1x384).result
+                tb_dst4 = pto.AllocTileOp(tile_buf_1x512).result
+                tb_tmp4 = pto.AllocTileOp(tile_buf_1x512).result
 
                 pto.TLoadOp(None, sv0, tb_s0)
                 pto.TLoadOp(None, sv1, tb_s1)
                 pto.TLoadOp(None, sv2, tb_s2)
                 pto.TLoadOp(None, sv3, tb_s3)
 
-                # Format2: ins(src0..src3) outs(dst, tmp) excuted=vector, exhausted=false
+                # 2-way: src0 + src1 -> 1x256
                 pto.TMrgSortOp(
-                    srcs=[tb_s0, tb_s1, tb_s2, tb_s3],
-                    dsts=[tb_dst, tb_tmp],
+                    srcs=[tb_s0, tb_s1],
+                    dsts=[tb_dst2, tb_tmp2],
                     excuted=excuted,
                     exhausted=False,
                 )
 
-                sv_out = pto.PartitionViewOp(part_view_1x512, tv_out, offsets=[c0, c0], sizes=[c1, c512]).result
-                pto.TStoreOp(None, tb_dst, sv_out)
+                # 3-way: src0 + src1 + src2 -> 1x384
+                pto.TMrgSortOp(
+                    srcs=[tb_s0, tb_s1, tb_s2],
+                    dsts=[tb_dst3, tb_tmp3],
+                    excuted=excuted,
+                    exhausted=True,
+                )
+
+                # 4-way: src0 + src1 + src2 + src3 -> 1x512
+                pto.TMrgSortOp(
+                    srcs=[tb_s0, tb_s1, tb_s2, tb_s3],
+                    dsts=[tb_dst4, tb_tmp4],
+                    excuted=excuted,
+                    exhausted=False,
+                )
+
+                sv_out2 = pto.PartitionViewOp(part_view_1x256, tv_out, offsets=[c0, c0], sizes=[c1, c256]).result
+                sv_out3 = pto.PartitionViewOp(part_view_1x384, tv_out, offsets=[c0, c256], sizes=[c1, c384]).result
+                sv_out4 = pto.PartitionViewOp(part_view_1x512, tv_out, offsets=[c0, c640], sizes=[c1, c512]).result
+                pto.TStoreOp(None, tb_dst2, sv_out2)
+                pto.TStoreOp(None, tb_dst3, sv_out3)
+                pto.TStoreOp(None, tb_dst4, sv_out4)
 
                 func.ReturnOp([])
 

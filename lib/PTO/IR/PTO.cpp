@@ -5200,12 +5200,13 @@ void mlir::pto::TMrgSortOp::print(OpAsmPrinter &p) {
       << getDst().getType() << ")";
   } else {
     assert(isFormat2());
-    p << " ins(" << getSrcs()[0] << ", " << getSrcs()[1] << ", " << getSrcs()[2]
-      << ", " << getSrcs()[3] << " {exhausted = " << (getExhausted() ? "true" : "false")
-      << "} : " << getSrcs()[0].getType() << ", " << getSrcs()[1].getType() << ", "
-      << getSrcs()[2].getType() << ", " << getSrcs()[3].getType() << ") outs("
-      << getDst() << ", " << getTmp() << ", " << getExcuted() << " : " << getDst().getType() << ", "
-      << getTmp().getType() << ", " << getExcuted().getType() << ")";
+    p << " ins(";
+    llvm::interleaveComma(getSrcs(), p, [&](Value src) { p << src; });
+    p << " {exhausted = " << (getExhausted() ? "true" : "false") << "} : ";
+    llvm::interleaveComma(getSrcs().getTypes(), p, [&](Type ty) { p << ty; });
+    p << ") outs(" << getDst() << ", " << getTmp() << ", " << getExcuted()
+      << " : " << getDst().getType() << ", " << getTmp().getType() << ", "
+      << getExcuted().getType() << ")";
   }
   p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"operandSegmentSizes", "exhausted"});
 }
@@ -5240,12 +5241,15 @@ ParseResult mlir::pto::TMrgSortOp::parse(OpAsmParser &parser, OperationState &re
   }
 
   SmallVector<OpAsmParser::UnresolvedOperand, 4> srcs = {first, second};
-  OpAsmParser::UnresolvedOperand third, fourth;
-  if (parser.parseComma() || parser.parseOperand(third) || parser.parseComma() ||
-      parser.parseOperand(fourth))
-    return failure();
-  srcs.push_back(third);
-  srcs.push_back(fourth);
+  while (parser.parseOptionalComma().succeeded()) {
+    OpAsmParser::UnresolvedOperand next;
+    if (parser.parseOperand(next))
+      return failure();
+    srcs.push_back(next);
+  }
+  if (srcs.size() < 2 || srcs.size() > 4)
+    return parser.emitError(parser.getCurrentLocation(),
+                            "tmrgsort format2 expects 2 to 4 src operands");
   bool exhaustedVal = false;
   if (parser.parseOptionalLBrace().succeeded()) {
     if (parser.parseKeyword("exhausted") || parser.parseEqual())
@@ -5255,10 +5259,21 @@ ParseResult mlir::pto::TMrgSortOp::parse(OpAsmParser &parser, OperationState &re
       return failure();
     exhaustedVal = (kw == "true");
   }
-  SmallVector<Type, 4> srcTypes(4);
-  if (parser.parseColon() || parser.parseType(srcTypes[0]) || parser.parseComma() ||
-      parser.parseType(srcTypes[1]) || parser.parseComma() || parser.parseType(srcTypes[2]) ||
-      parser.parseComma() || parser.parseType(srcTypes[3]) || parser.parseRParen() ||
+  SmallVector<Type, 4> srcTypes;
+  srcTypes.reserve(srcs.size());
+  if (parser.parseColon())
+    return failure();
+  Type firstSrcTy;
+  if (parser.parseType(firstSrcTy))
+    return failure();
+  srcTypes.push_back(firstSrcTy);
+  while (parser.parseOptionalComma().succeeded()) {
+    Type nextTy;
+    if (parser.parseType(nextTy))
+      return failure();
+    srcTypes.push_back(nextTy);
+  }
+  if (srcTypes.size() != srcs.size() || parser.parseRParen() ||
       parser.parseKeyword("outs") || parser.parseLParen())
     return failure();
   OpAsmParser::UnresolvedOperand dstOp, tmpOp, excutedOp;
@@ -5269,7 +5284,8 @@ ParseResult mlir::pto::TMrgSortOp::parse(OpAsmParser &parser, OperationState &re
       parser.parseComma() || parser.parseType(excutedTy) || parser.parseRParen())
     return failure();
   result.addAttribute("operandSegmentSizes",
-                      parser.getBuilder().getDenseI32ArrayAttr({4, 0, 2, 1}));
+                      parser.getBuilder().getDenseI32ArrayAttr(
+                          {static_cast<int32_t>(srcs.size()), 0, 2, 1}));
   if (parser.resolveOperands(srcs, srcTypes, parser.getCurrentLocation(), result.operands) ||
       parser.resolveOperand(dstOp, dstTy, result.operands) ||
       parser.resolveOperand(tmpOp, tmpTy, result.operands) ||
@@ -5319,6 +5335,8 @@ mlir::LogicalResult mlir::pto::TMrgSortOp::verify() {
     for (Value v : getSrcs())
       if (!isPTOShapedLike(v.getType()))
         return emitOpError() << "format2 expects PTO shaped-like type for each src";
+    if (getSrcs().size() < 2u || getSrcs().size() > 4u)
+      return emitOpError() << "format2 expects 2 to 4 srcs";
     if (getDsts().size() != 2u || !getExcuted())
       return emitOpError() << "format2 expects outs(dst, tmp) and excuted=vector";
     Type dstTy = getDst().getType();
@@ -5329,11 +5347,22 @@ mlir::LogicalResult mlir::pto::TMrgSortOp::verify() {
     if (!excutedTy || excutedTy.getRank() != 1 || excutedTy.getNumElements() != 4 ||
         !excutedTy.getElementType().isInteger(16))
       return emitOpError() << "format2 excuted must be vector<4xi16>";
-    if (getElemTy(dstTy) != getElemTy(tmpTy))
+    Type elemTy = getElemTy(dstTy);
+    if (elemTy != getElemTy(tmpTy))
       return emitOpError() << "format2 expects dst/tmp element types to match";
+    auto dstShape = getShapeVec(dstTy);
+    auto tmpShape = getShapeVec(tmpTy);
+    if (dstShape != tmpShape)
+      return emitOpError() << "format2 expects dst/tmp shapes to match";
+    for (Value src : getSrcs()) {
+      Type srcTy = src.getType();
+      if (getElemTy(srcTy) != elemTy)
+        return emitOpError() << "format2 expects src/dst/tmp element types to match";
+    }
     return mlir::success();
   }
-  return emitOpError() << "tmrgsort expects format1 (1 src + blockLen + 1 dst) or format2 (4 srcs, outs dst, excuted)";
+  return emitOpError() << "tmrgsort expects format1 (1 src + blockLen + 1 dst) or "
+                          "format2 (2 to 4 srcs, outs dst/tmp, excuted)";
 }
 
 mlir::LogicalResult mlir::pto::TMulOp::verify() {

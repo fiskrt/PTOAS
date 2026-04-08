@@ -6253,7 +6253,7 @@ dst = merge_sort(src, blockLen)
 
 | Name | Type | Description |
 |------|------|-------------|
-| `src` / `src0..src3` | PTO shaped-like type | Input tile(s) |
+| `src` / `src0..src3` | PTO shaped-like type | Input tile(s); format2 supports 2 to 4 sources |
 | `blockLen` | `AnyInteger` operand | Block length for format1 |
 | `dst` | PTO shaped-like type | Output tile |
 | `tmp` | PTO shaped-like type | Temporary output tile for format2 |
@@ -6266,7 +6266,7 @@ dst = merge_sort(src, blockLen)
 ```
   - `pto.tmrgsort` has two accepted forms:
     - format1: `ins(src, blockLen : src_type, blockLen_type) outs(dst : dst_type)`
-    - format2: `ins(src0, src1, src2, src3 {exhausted = <bool>} : src0_type, src1_type, src2_type, src3_type) outs(dst, tmp, excuted : dst_type, tmp_type, vector<4xi16>)`
+    - format2: `ins(src0, src1[, src2[, src3]] {exhausted = <bool>} : src0_type, src1_type[, src2_type[, src3_type]]) outs(dst, tmp, excuted : dst_type, tmp_type, vector<4xi16>)`
 ```
 
 
@@ -6280,7 +6280,14 @@ dst = merge_sort(src, blockLen)
   - `src valid column` must be an integer multiple of `blockLen * 4`.
   - `repeatTimes = src valid column / (blockLen * 4)` must be in `[1, 255]`.
 - **Multi-list variants**:
-  - `tmp` is required and `executedNumList` is written by the implementation; supported list counts and exact semantics are target-defined.
+  - Accepts 2-way, 3-way, and 4-way merge forms.
+  - `dst` and `tmp` must have the same element type and shape.
+  - Every `src` must have the same element type as `dst/tmp`.
+  - `excuted` must be `vector<4xi16>`.
+  - PTOAS maps these forms to the following `pto-isa` APIs:
+    - `pto.tmrgsort ins(src0, src1, ...) outs(dst, tmp, excuted)` -> `TMRGSORT(dst, excuted, tmp, src0, src1)`
+    - `pto.tmrgsort ins(src0, src1, src2, ...) outs(dst, tmp, excuted)` -> `TMRGSORT(dst, excuted, tmp, src0, src1, src2)`
+    - `pto.tmrgsort ins(src0, src1, src2, src3, ...) outs(dst, tmp, excuted)` -> `TMRGSORT(dst, excuted, tmp, src0, src1, src2, src3)`
 
 **Hardware Mapping:**
 
@@ -6294,10 +6301,20 @@ pto.tmrgsort ins(%src, %blockLen : !pto.tile_buf<...>, i32)
              outs(%dst : !pto.tile_buf<...>)
 
 // format2
+pto.tmrgsort ins(%src0, %src1 {exhausted = false} :
+                 !pto.tile_buf<...>, !pto.tile_buf<...>)
+             outs(%dst2, %tmp2, %excuted :
+                 !pto.tile_buf<...>, !pto.tile_buf<...>, vector<4xi16>)
+
+pto.tmrgsort ins(%src0, %src1, %src2 {exhausted = true} :
+                 !pto.tile_buf<...>, !pto.tile_buf<...>, !pto.tile_buf<...>)
+             outs(%dst3, %tmp3, %excuted :
+                 !pto.tile_buf<...>, !pto.tile_buf<...>, vector<4xi16>)
+
 pto.tmrgsort ins(%src0, %src1, %src2, %src3 {exhausted = false} :
                  !pto.tile_buf<...>, !pto.tile_buf<...>,
                  !pto.tile_buf<...>, !pto.tile_buf<...>)
-             outs(%dst, %tmp, %excuted :
+             outs(%dst4, %tmp4, %excuted :
                  !pto.tile_buf<...>, !pto.tile_buf<...>, vector<4xi16>)
 ```
 
