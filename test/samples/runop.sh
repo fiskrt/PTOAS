@@ -154,8 +154,8 @@ process_one_dir() {
     use_ptobc_roundtrip=1
   fi
   # Qwen3 tilelet kernels currently serve as direct ptoas compile-regression
-  # coverage. They require A5/level3 lowering, but are not expected to
-  # roundtrip through ptobc yet.
+  # coverage. Default them to A5/level3 lowering when the caller does not
+  # provide an explicit arch, but let A3/A5 callers override PTOAS_FLAGS.
   if [[ "$A" == "Qwen3Tilelet" ]]; then
     use_ptobc_roundtrip=0
   fi
@@ -941,10 +941,6 @@ PY
       cpp="${out_subdir}/${base}.cpp"
       if [[ "$A" == "Qwen3Tilelet" ]]; then
         cpp="${out_subdir}/${base}-pto.cpp"
-      fi
-      if [[ "$A" == "Qwen3Tilelet" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
-        echo -e "${A}(${base}.pto)\tSKIP\trequires --pto-arch=a5"
-        continue
       fi
       local sample_use_ptobc_roundtrip="$use_ptobc_roundtrip"
 

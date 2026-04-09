@@ -2,7 +2,7 @@ Qwen3 tilelet PTO kernels generated from `pypto-lib/examples/models/qwen3/qwen3_
 
 Scope:
 - compile-regression inputs for `ptoas`
-- A5-only kernels; `runop.sh` injects `--pto-arch a5 --pto-level=level3` for this directory unless the caller already overrides `PTOAS_FLAGS`
+- tilelet kernels that default to `--pto-arch a5 --pto-level=level3` in `runop.sh`, but can also be compiled on A3 when the caller overrides `PTOAS_FLAGS`
 
 Notes:
 - The source PyPTO program lowers to 20 `qwen3_decode_layer_incore_*.pto` fragments; this directory vendors the full emitted `.pto` set regenerated from the tilelet source with `BATCH_TILE=16`.
