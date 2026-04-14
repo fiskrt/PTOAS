@@ -1445,10 +1445,12 @@ def TPushToAicOp : PTO_TOp<"tpush_to_aic"> {
   }];
 }
 
-def TPopFromAicOp : PTO_TOp<"tpop_from_aic"> {
+def TPopFromAicOp : PTO_TOp<"tpop_from_aic", [AttrSizedOperandSegments]> {
   let summary = "Frontend C2V consumer pop in Vector kernel";
 
   let arguments = (ins
+      Optional<Index>:$valid_row,
+      Optional<Index>:$valid_col,
       I8Attr:$split
   );
 
@@ -1456,14 +1458,17 @@ def TPopFromAicOp : PTO_TOp<"tpop_from_aic"> {
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `{` `split` `=` $split `}` attr-dict `->` qualified(type($tile))
+    (`(` $valid_row^ `,` $valid_col `)`)? `{` `split` `=` $split `}` attr-dict
+    `->` qualified(type($tile))
   }];
 }
 
-def TPopFromAivOp : PTO_TOp<"tpop_from_aiv"> {
+def TPopFromAivOp : PTO_TOp<"tpop_from_aiv", [AttrSizedOperandSegments]> {
   let summary = "Frontend V2C consumer pop in Cube kernel";
 
   let arguments = (ins
+      Optional<Index>:$valid_row,
+      Optional<Index>:$valid_col,
       I8Attr:$split
   );
 
@@ -1471,7 +1476,8 @@ def TPopFromAivOp : PTO_TOp<"tpop_from_aiv"> {
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `{` `split` `=` $split `}` attr-dict `->` qualified(type($tile))
+    (`(` $valid_row^ `,` $valid_col `)`)? `{` `split` `=` $split `}` attr-dict
+    `->` qualified(type($tile))
   }];
 }
 

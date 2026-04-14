@@ -256,6 +256,10 @@ static LogicalResult lowerFrontendDataOps(func::FuncOp funcOp,
       }
       auto decl = rewriter.create<DeclareTileOp>(pop.getLoc(),
                                                  pop.getTile().getType());
+      if (pop.getValidRow() && pop.getValidCol()) {
+        rewriter.create<SetValidShapeOp>(pop.getLoc(), decl.getTile(),
+                                         pop.getValidRow(), pop.getValidCol());
+      }
       rewriter.create<TPopOp>(pop.getLoc(), decl.getTile(), handles.c2vPipe,
                               pop.getSplitAttr());
       rewriter.replaceOp(pop, decl.getTile());
@@ -270,6 +274,10 @@ static LogicalResult lowerFrontendDataOps(func::FuncOp funcOp,
       }
       auto decl = rewriter.create<DeclareTileOp>(pop.getLoc(),
                                                  pop.getTile().getType());
+      if (pop.getValidRow() && pop.getValidCol()) {
+        rewriter.create<SetValidShapeOp>(pop.getLoc(), decl.getTile(),
+                                         pop.getValidRow(), pop.getValidCol());
+      }
       rewriter.create<TPopOp>(pop.getLoc(), decl.getTile(), handles.v2cPipe,
                               pop.getSplitAttr());
       rewriter.replaceOp(pop, decl.getTile());

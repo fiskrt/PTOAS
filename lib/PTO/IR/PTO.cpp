@@ -6994,7 +6994,8 @@ static bool isLocallyBoundTileSource(Value value) {
   if (!value || isa<BlockArgument>(value))
     return false;
 
-  if (isa<AllocTileOp, BindTileOp, PointerCastOp>(value.getDefiningOp()))
+  if (isa<AllocTileOp, DeclareTileOp, BindTileOp, PointerCastOp>(
+          value.getDefiningOp()))
     return true;
 
   if (auto bitcast = value.getDefiningOp<BitcastOp>())
@@ -10334,6 +10335,32 @@ static LogicalResult verifyFrontendSplitOp(Operation *op,
   return verifySplitAttr(op, split);
 }
 
+template <typename FrontendPopOpT>
+static LogicalResult verifyFrontendPopOp(FrontendPopOpT op,
+                                         FunctionKernelKind expected,
+                                         StringRef kernelName) {
+  if (failed(verifyFrontendSplitOp(op.getOperation(), expected, kernelName,
+                                   op.getSplit())))
+    return failure();
+
+  bool hasValidRow = static_cast<bool>(op.getValidRow());
+  bool hasValidCol = static_cast<bool>(op.getValidCol());
+  if (hasValidRow != hasValidCol)
+    return op.emitOpError(
+        "expects valid_row and valid_col operands to be provided together");
+  if (!hasValidRow)
+    return success();
+
+  auto tileTy = dyn_cast<TileBufType>(op.getTile().getType());
+  if (!tileTy)
+    return op.emitOpError(
+        "expects tile result to be !pto.tile_buf when valid_row/valid_col operands are provided");
+  if (!tileTy.hasDynamicValid())
+    return op.emitOpError(
+        "expects tile result to have dynamic validShape (?, ?) when valid_row/valid_col operands are provided");
+  return success();
+}
+
 static LogicalResult verifyPipeShape(Operation *op, int8_t dirMask, int32_t slotSize,
                                      int32_t slotNum,
                                      std::optional<int32_t> flagBase) {
@@ -10468,13 +10495,11 @@ LogicalResult TPushToAicOp::verify() {
 }
 
 LogicalResult TPopFromAicOp::verify() {
-  return verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Vector,
-                               "vector", getSplit());
+  return verifyFrontendPopOp(*this, FunctionKernelKind::Vector, "vector");
 }
 
 LogicalResult TPopFromAivOp::verify() {
-  return verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Cube,
-                               "cube", getSplit());
+  return verifyFrontendPopOp(*this, FunctionKernelKind::Cube, "cube");
 }
 
 LogicalResult TFreeFromAicOp::verify() {

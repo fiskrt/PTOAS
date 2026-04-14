@@ -9126,7 +9126,12 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
       FailureOr<TileBuildSpec> tileSpec = buildTileSpec();
       if (failed(tileSpec))
         return failure();
-      rewriter.replaceOp(op, buildTileValue(*tileSpec));
+      TileBuildSpec declSpec = *tileSpec;
+      if (op->hasAttr(kForceDynamicValidShapeAttrName)) {
+        declSpec.useConstructor = false;
+        declSpec.constructorArgs.clear();
+      }
+      rewriter.replaceOp(op, buildTileValue(declSpec));
       return success();
     }
 
