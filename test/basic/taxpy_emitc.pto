@@ -1,0 +1,19 @@
+// RUN: ptoas --pto-arch=a3 %s 2>&1 | FileCheck %s --check-prefix=A3
+// RUN: ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s --check-prefix=A5
+
+module {
+  func.func @taxpy_emitc() {
+    %cst = arith.constant 2.0 : f16
+    %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.taxpy ins(%src, %cst : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, f16)
+              outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+}
+
+// A3-LABEL: __global__ AICORE void taxpy_emitc()
+// A3: TAXPY(
+// A5-LABEL: __global__ AICORE void taxpy_emitc()
+// A5: TAXPY(

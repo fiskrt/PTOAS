@@ -1140,6 +1140,7 @@ int main(int argc, char **argv) {
   
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
   pm.addPass(pto::createPTOViewToMemrefPass());
   //pm.addPass(createInferPTOMemScopePass());
 

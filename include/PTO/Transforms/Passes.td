@@ -57,6 +57,19 @@ def InferPTOLayout : Pass<"pto-infer-layout", "func::FuncOp"> {
   let dependentDialects = ["pto::PTODialect", "arith::ArithDialect"];
 }
 
+def PTOA5NormalizeTMov : Pass<"pto-a5-normalize-tmov", "func::FuncOp"> {
+  let summary = "Normalize risky A5 vec->vec col_major TMOV into row-major reinterpret + TMOV";
+  let description = [{
+    Rewrites A5 `pto.tmov` patterns that use vec->vec col_major/none_box tiles:
+      src(col_major) -> pto.treshape(row_major) -> pto.tmov(row_major->row_major)
+      dst(col_major) -> pto.treshape(row_major)
+    This avoids unsupported A5 PTO-ISA vec->vec col_major TMOV paths while
+    preserving alias semantics via SSA treshape (no real data movement).
+  }];
+  let constructor = "mlir::pto::createPTOA5NormalizeTMovPass()";
+  let dependentDialects = ["pto::PTODialect", "func::FuncDialect"];
+}
+
 
 def InferPTOMemScope : Pass<"pto-infer-mem-scope"> {
   let summary = "Infer memory scope for PTO Ops";

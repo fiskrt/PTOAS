@@ -155,6 +155,13 @@ inline constexpr OpInfo kOpTable[] = {
   {0x1073, "pto.trowexpanddiv", 0, 0x00, 0x02, 0, 0, 0, 0x00},
   {0x1074, "pto.trowexpandmul", 0, 0x00, 0x02, 0, 0, 0, 0x00},
   {0x1075, "pto.tpack", 0, 0x00, 0x00, 2, 0, 0, 0x00},
+  {0x1076, "pto.taxpy", 0, 0x00, 0x00, 3, 0, 0, 0x00},
+  {0x1077, "pto.thistogram", 0, 0x00, 0x00, 3, 0, 0, 0x00},
+  {0x1078, "pto.tget_scale_addr", 0, 0x00, 0x00, 2, 0, 0, 0x00},
+  {0x1079, "pto.trowargmax", 0, 0x00, 0x00, 3, 0, 0, 0x00},
+  {0x107A, "pto.trowargmin", 0, 0x00, 0x00, 3, 0, 0, 0x00},
+  {0x107B, "pto.tcolargmax", 0, 0x00, 0x00, 3, 0, 0, 0x00},
+  {0x107C, "pto.tcolargmin", 0, 0x00, 0x00, 3, 0, 0, 0x00},
   {0x2000, "arith.addi", 0, 0x01, 0x00, 2, 1, 0, 0x00},
   {0x2001, "arith.ceildivsi", 0, 0x01, 0x00, 2, 1, 0, 0x00},
   {0x2002, "arith.cmpi", 0, 0x01, 0x00, 2, 1, 0, 0x01},
@@ -320,6 +327,14 @@ inline std::optional<uint16_t> lookupOpcodeByName(llvm::StringRef name) {
     .Case("pto.subset", 0x1072)
     .Case("pto.trowexpanddiv", 0x1073)
     .Case("pto.trowexpandmul", 0x1074)
+    .Case("pto.tpack", 0x1075)
+    .Case("pto.taxpy", 0x1076)
+    .Case("pto.thistogram", 0x1077)
+    .Case("pto.tget_scale_addr", 0x1078)
+    .Case("pto.trowargmax", 0x1079)
+    .Case("pto.trowargmin", 0x107A)
+    .Case("pto.tcolargmax", 0x107B)
+    .Case("pto.tcolargmin", 0x107C)
     .Case("scf.for", 0x4000)
     .Case("scf.if", 0x4001)
     .Case("scf.yield", 0x4002)
@@ -471,6 +486,14 @@ inline std::optional<OpcodeAndVariant> lookupOpcodeAndVariantByFullName(llvm::St
     .Case("pto.subset", OpcodeAndVariant{0x1072, 0, 0})
     .Case("pto.trowexpanddiv", OpcodeAndVariant{0x1073, 0, 0})
     .Case("pto.trowexpandmul", OpcodeAndVariant{0x1074, 0, 0})
+    .Case("pto.tpack", OpcodeAndVariant{0x1075, 0, 0})
+    .Case("pto.taxpy", OpcodeAndVariant{0x1076, 0, 0})
+    .Case("pto.thistogram", OpcodeAndVariant{0x1077, 0, 0})
+    .Case("pto.tget_scale_addr", OpcodeAndVariant{0x1078, 0, 0})
+    .Case("pto.trowargmax", OpcodeAndVariant{0x1079, 0, 0})
+    .Case("pto.trowargmin", OpcodeAndVariant{0x107A, 0, 0})
+    .Case("pto.tcolargmax", OpcodeAndVariant{0x107B, 0, 0})
+    .Case("pto.tcolargmin", OpcodeAndVariant{0x107C, 0, 0})
     .Case("scf.for", OpcodeAndVariant{0x4000, 0, 0})
     .Case("scf.if", OpcodeAndVariant{0x4001, 0, 0})
     .Case("scf.yield", OpcodeAndVariant{0x4002, 0, 0})

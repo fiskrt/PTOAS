@@ -404,6 +404,42 @@ def PTO_ReluPreModeAttr : EnumAttr<PTO_Dialect, PTO_ReluPreModeEnum, "relu_pre_m
   let summary = "TSTORE relu pre mode attribute";
 }
 
+def PTO_GatherOOBEnum : PTO_I32Enum<
+  "GatherOOB", "PTO MGATHER out-of-bounds mode", [
+    I32EnumAttrCase<"Undefined", 0, "undefined">,
+    I32EnumAttrCase<"Clamp", 1, "clamp">,
+    I32EnumAttrCase<"Wrap", 2, "wrap">,
+    I32EnumAttrCase<"Zero", 3, "zero">
+  ]>;
+
+def PTO_GatherOOBAttr : EnumAttr<PTO_Dialect, PTO_GatherOOBEnum, "gather_oob"> {
+  let summary = "MGATHER out-of-bounds handling mode";
+}
+
+def PTO_ScatterAtomicOpEnum : PTO_I32Enum<
+  "ScatterAtomicOp", "PTO MSCATTER atomic mode", [
+    I32EnumAttrCase<"None", 0, "none">,
+    I32EnumAttrCase<"Add", 1, "add">,
+    I32EnumAttrCase<"Max", 2, "max">,
+    I32EnumAttrCase<"Min", 3, "min">
+  ]>;
+
+def PTO_ScatterAtomicOpAttr : EnumAttr<PTO_Dialect, PTO_ScatterAtomicOpEnum, "scatter_atomic_op"> {
+  let summary = "MSCATTER atomic mode";
+}
+
+def PTO_ScatterOOBEnum : PTO_I32Enum<
+  "ScatterOOB", "PTO MSCATTER out-of-bounds mode", [
+    I32EnumAttrCase<"Undefined", 0, "undefined">,
+    I32EnumAttrCase<"Skip", 1, "skip">,
+    I32EnumAttrCase<"Clamp", 2, "clamp">,
+    I32EnumAttrCase<"Wrap", 3, "wrap">
+  ]>;
+
+def PTO_ScatterOOBAttr : EnumAttr<PTO_Dialect, PTO_ScatterOOBEnum, "scatter_oob"> {
+  let summary = "MSCATTER out-of-bounds handling mode";
+}
+
 def PTO_AccToVecMode_Enum : PTO_I32Enum<"AccToVecMode", "TMOV acc-to-vec mode", [
   I32EnumAttrCase<"SingleModeVec0", 0, "single_mode_vec0">,
   I32EnumAttrCase<"SingleModeVec1", 1, "single_mode_vec1">,

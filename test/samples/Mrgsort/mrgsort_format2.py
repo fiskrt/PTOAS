@@ -125,7 +125,7 @@ def build():
                     srcs=[tb_s0, tb_s1, tb_s2],
                     dsts=[tb_dst3, tb_tmp3],
                     excuted=excuted,
-                    exhausted=True,
+                    exhausted=False,
                 )
 
                 # 4-way: src0 + src1 + src2 + src3 -> 1x512
@@ -133,7 +133,7 @@ def build():
                     srcs=[tb_s0, tb_s1, tb_s2, tb_s3],
                     dsts=[tb_dst4, tb_tmp4],
                     excuted=excuted,
-                    exhausted=False,
+                    exhausted=True,
                 )
 
                 sv_out2 = pto.PartitionViewOp(part_view_1x256, tv_out, offsets=[c0, c0], sizes=[c1, c256]).result

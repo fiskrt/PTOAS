@@ -1,0 +1,20 @@
+// RUN: ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s
+
+module {
+  func.func @thistogram_emitc() {
+    %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=ui16, rows=8, cols=32, v_row=8, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %idx = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=ui8, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>
+    %dst0 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=8, cols=256, v_row=8, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %dst1 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=8, cols=256, v_row=8, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.thistogram ins(%src, %idx : !pto.tile_buf<loc=vec, dtype=ui16, rows=8, cols=32, v_row=8, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=ui8, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>)
+                   outs(%dst0 : !pto.tile_buf<loc=vec, dtype=ui32, rows=8, cols=256, v_row=8, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.thistogram ins(%src, %idx : !pto.tile_buf<loc=vec, dtype=ui16, rows=8, cols=32, v_row=8, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=ui8, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>)
+                   outs(%dst1 : !pto.tile_buf<loc=vec, dtype=ui32, rows=8, cols=256, v_row=8, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>) {isMSB = false}
+    return
+  }
+}
+
+// CHECK-LABEL: __global__ AICORE void thistogram_emitc()
+// CHECK: THISTOGRAM<true>(
+// CHECK: THISTOGRAM<false>(

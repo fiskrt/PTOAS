@@ -1,0 +1,13 @@
+// RUN: not ptoas --pto-arch=a3 %s 2>&1 | FileCheck %s
+
+func.func @thistogram_verify_invalid_a3() {
+  %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=ui16, rows=8, cols=32, v_row=8, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+  %idx = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=ui8, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>
+  %dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=8, cols=256, v_row=8, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+  pto.thistogram ins(%src, %idx : !pto.tile_buf<loc=vec, dtype=ui16, rows=8, cols=32, v_row=8, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=ui8, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>)
+                 outs(%dst : !pto.tile_buf<loc=vec, dtype=ui32, rows=8, cols=256, v_row=8, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+  return
+}
+
+// CHECK: error: 'pto.thistogram' op thistogram is only supported on A5

@@ -1,0 +1,29 @@
+module attributes {pto.target_arch = "a5"} {
+  // A5 repro case: force observable path
+  // GM->UB tload (16x1 col_major) -> TMOV(col_major->col_major) -> UB->GM tstore.
+  // This avoids "no side-effect" kernels and makes TMOV path verifiable in validation.
+  func.func @test_tmov_col_major_16x1_align_a5(%arg0: !pto.ptr<f32>, %arg1: !pto.ptr<f32>) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0_i64 = arith.constant 0 : i64
+    %c1024_i64 = arith.constant 1024 : i64
+    %c16 = arith.constant 16 : index
+    %c1 = arith.constant 1 : index
+    %c0 = arith.constant 0 : index
+
+    %src_view = pto.make_tensor_view %arg0, shape = [%c16, %c1], strides = [%c1, %c16] {layout = #pto.layout<dn>}: !pto.tensor_view<?x?xf32>
+    %dst_view = pto.make_tensor_view %arg1, shape = [%c16, %c1], strides = [%c1, %c16] {layout = #pto.layout<dn>}: !pto.tensor_view<?x?xf32>
+
+    %src_pview = pto.partition_view %src_view, offsets = [%c0, %c0], sizes = [%c16, %c1] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<16x1xf32>
+    %dst_pview = pto.partition_view %dst_view, offsets = [%c0, %c0], sizes = [%c16, %c1] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<16x1xf32>
+
+    %src = pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1, v_row=16, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>
+    %dst = pto.alloc_tile addr = %c1024_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1, v_row=16, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.tload ins(%src_pview : !pto.partition_tensor_view<16x1xf32>) outs(%src : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1, v_row=16, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>)
+    pto.barrier <PIPE_ALL>
+    pto.tmov ins(%src : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1, v_row=16, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>)
+             outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1, v_row=16, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>)
+    pto.barrier <PIPE_ALL>
+    pto.tstore ins(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1, v_row=16, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>) outs(%dst_pview : !pto.partition_tensor_view<16x1xf32>)
+    return
+  }
+}
