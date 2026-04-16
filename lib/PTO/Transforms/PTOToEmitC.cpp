@@ -2116,7 +2116,7 @@ static FailureOr<std::string> buildEmitCOpaqueConstantLiteral(Type targetType,
       if (!first)
         os << ", ";
       first = false;
-      os << elem.getSExtValue();
+      os << elem.getZExtValue();
     }
     os << "}";
     os.flush();
