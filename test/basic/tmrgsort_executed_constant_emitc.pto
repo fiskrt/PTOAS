@@ -1,0 +1,23 @@
+// RUN: ptoas --pto-arch=a3 %s 2>&1 | FileCheck %s --check-prefix=A3
+
+module {
+  func.func @tmrgsort_executed_constant_emitc() {
+    %ex_full = arith.constant dense<[128, 64, 0, 0]> : vector<4xi16>
+    %ex_zero = arith.constant dense<0> : vector<4xi16>
+
+    %src0 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %src1 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=256, v_row=1, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %tmp = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=256, v_row=1, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.tmrgsort ins(%src0, %src1 {exhausted = false} : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%dst, %tmp, %ex_full : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=256, v_row=1, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=256, v_row=1, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>, vector<4xi16>)
+    pto.tmrgsort ins(%src0, %src1 {exhausted = true} : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%dst, %tmp, %ex_zero : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=256, v_row=1, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=256, v_row=1, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>, vector<4xi16>)
+    return
+  }
+}
+
+// A3-LABEL: __global__ AICORE void tmrgsort_executed_constant_emitc()
+// A3-DAG: pto::MrgSortExecutedNumList [[EXFULL:v[0-9]+]] = pto::MrgSortExecutedNumList{128, 64, 0, 0};
+// A3-DAG: pto::MrgSortExecutedNumList [[EXZERO:v[0-9]+]] = pto::MrgSortExecutedNumList{0, 0, 0, 0};
+// A3: TMRGSORT<{{.*}}, false>({{.*}}, [[EXFULL]], {{.*}});
+// A3: TMRGSORT<{{.*}}, true>({{.*}}, [[EXZERO]], {{.*}});

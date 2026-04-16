@@ -27,6 +27,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 
 #include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -411,6 +412,8 @@ static Value makeEmitCIntConstant(ConversionPatternRewriter &rewriter,
                                   Location loc, Type type, int64_t value);
 static Value emitCCast(ConversionPatternRewriter &rewriter, Location loc,
                        Type dstType, Value src);
+static FailureOr<std::string> buildEmitCOpaqueConstantLiteral(Type targetType,
+                                                              Attribute valueAttr);
 static Value castSignlessIntToUnsignedSameWidth(ConversionPatternRewriter &rewriter,
                                                 Location loc, Value v,
                                                 unsigned bitWidth);
@@ -2089,6 +2092,40 @@ static Value makeEmitCIntConstant(ConversionPatternRewriter &rewriter,
   return makeEmitCOpaqueConstant(rewriter, loc, type, std::to_string(value));
 }
 
+static FailureOr<std::string> buildEmitCOpaqueConstantLiteral(Type targetType,
+                                                              Attribute valueAttr) {
+  auto opaqueTy = dyn_cast<emitc::OpaqueType>(targetType);
+  if (!opaqueTy)
+    return failure();
+
+  if (opaqueTy.getValue() == "pto::MrgSortExecutedNumList") {
+    auto dense = dyn_cast_or_null<DenseIntElementsAttr>(valueAttr);
+    if (!dense)
+      return failure();
+
+    auto vecTy = dyn_cast<VectorType>(dense.getType());
+    if (!vecTy || vecTy.getRank() != 1 || vecTy.getNumElements() != 4 ||
+        !vecTy.getElementType().isInteger(16))
+      return failure();
+
+    std::string literal;
+    llvm::raw_string_ostream os(literal);
+    os << "pto::MrgSortExecutedNumList{";
+    bool first = true;
+    for (APInt elem : dense.getValues<APInt>()) {
+      if (!first)
+        os << ", ";
+      first = false;
+      os << elem.getSExtValue();
+    }
+    os << "}";
+    os.flush();
+    return literal;
+  }
+
+  return failure();
+}
+
 static Value emitCCast(ConversionPatternRewriter &rewriter, Location loc,
                        Type dstType, Value src) {
   if (src.getType() == dstType)
@@ -2307,51 +2344,60 @@ struct ArithTruncIToEmitC : public OpConversionPattern<arith::TruncIOp> {
   }
 };
 
-		struct ArithConstantToEmitC : public OpConversionPattern<arith::ConstantOp> {
-		  using OpConversionPattern<arith::ConstantOp>::OpConversionPattern;
-		
-		  LogicalResult matchAndRewrite(arith::ConstantOp op, OpAdaptor adaptor,
-		                                ConversionPatternRewriter &rewriter) const override {
-	    Type newType = getTypeConverter()->convertType(op.getType());
-	    if (!newType) return failure();
-	
-	    // `adaptor.getValue()` may be null if attribute conversion isn't defined.
-	    // Use the original attribute as fallback and always cast null-safely.
-	    Attribute valueAttr = adaptor.getValue();
-	    if (!valueAttr) valueAttr = op.getValue();
+struct ArithConstantToEmitC : public OpConversionPattern<arith::ConstantOp> {
+  using OpConversionPattern<arith::ConstantOp>::OpConversionPattern;
 
-		    if (auto floatAttr = dyn_cast_or_null<FloatAttr>(valueAttr)) {
-		      SmallString<32> valStr;
-		      floatAttr.getValue().toString(valStr);
-		      llvm::StringRef s(valStr);
-		      // Ensure the literal parses as a floating-point constant in C/C++.
-		      // `APFloat::toString` may emit "1" for integral values; make it "1.0".
-		      const bool hasFloatMarker =
-		          s.contains('.') || s.contains('e') || s.contains('E') ||
-		          s.contains('p') || s.contains('P') || s.starts_with("0x") ||
-		          s.starts_with("0X") || s.starts_with("nan") ||
-		          s.starts_with("-nan") || s.starts_with("inf") ||
-		          s.starts_with("-inf");
-		      if (!hasFloatMarker)
-		        valStr.append(".0");
-		      // Suffix: keep `f` for f16/f32; omit for f64.
-		      if (!floatAttr.getType().isF64())
-		        valStr.append("f");
-		      auto constAttr = emitc::OpaqueAttr::get(rewriter.getContext(), valStr);
-		      rewriter.replaceOpWithNewOp<emitc::ConstantOp>(op, newType, constAttr);
-		      return success();
-		    }
-	
-	    if (auto intAttr = dyn_cast_or_null<IntegerAttr>(valueAttr)) {
-	      std::string valStr = std::to_string(intAttr.getValue().getSExtValue());
-	      auto constAttr = emitc::OpaqueAttr::get(rewriter.getContext(), valStr);
-	      rewriter.replaceOpWithNewOp<emitc::ConstantOp>(op, newType, constAttr);
-	      return success();
-	    }
-	
-	    return failure();
-	  }
-	};
+  LogicalResult matchAndRewrite(arith::ConstantOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Type newType = getTypeConverter()->convertType(op.getType());
+    if (!newType)
+      return failure();
+
+    // `adaptor.getValue()` may be null if attribute conversion isn't defined.
+    // Use the original attribute as fallback and always cast null-safely.
+    Attribute valueAttr = adaptor.getValue();
+    if (!valueAttr)
+      valueAttr = op.getValue();
+
+    if (auto opaqueLiteral = buildEmitCOpaqueConstantLiteral(newType, valueAttr);
+        succeeded(opaqueLiteral)) {
+      auto constAttr = emitc::OpaqueAttr::get(rewriter.getContext(), *opaqueLiteral);
+      rewriter.replaceOpWithNewOp<emitc::ConstantOp>(op, newType, constAttr);
+      return success();
+    }
+
+    if (auto floatAttr = dyn_cast_or_null<FloatAttr>(valueAttr)) {
+      SmallString<32> valStr;
+      floatAttr.getValue().toString(valStr);
+      llvm::StringRef s(valStr);
+      // Ensure the literal parses as a floating-point constant in C/C++.
+      // `APFloat::toString` may emit "1" for integral values; make it "1.0".
+      const bool hasFloatMarker =
+          s.contains('.') || s.contains('e') || s.contains('E') ||
+          s.contains('p') || s.contains('P') || s.starts_with("0x") ||
+          s.starts_with("0X") || s.starts_with("nan") ||
+          s.starts_with("-nan") || s.starts_with("inf") ||
+          s.starts_with("-inf");
+      if (!hasFloatMarker)
+        valStr.append(".0");
+      // Suffix: keep `f` for f16/f32; omit for f64.
+      if (!floatAttr.getType().isF64())
+        valStr.append("f");
+      auto constAttr = emitc::OpaqueAttr::get(rewriter.getContext(), valStr);
+      rewriter.replaceOpWithNewOp<emitc::ConstantOp>(op, newType, constAttr);
+      return success();
+    }
+
+    if (auto intAttr = dyn_cast_or_null<IntegerAttr>(valueAttr)) {
+      std::string valStr = std::to_string(intAttr.getValue().getSExtValue());
+      auto constAttr = emitc::OpaqueAttr::get(rewriter.getContext(), valStr);
+      rewriter.replaceOpWithNewOp<emitc::ConstantOp>(op, newType, constAttr);
+      return success();
+    }
+
+    return failure();
+  }
+};
 //===----------------------------------------------------------------------===//
 // pto.mgather lowering -> MGATHER(dst, src, indexes)  (pto-isa)
 //===----------------------------------------------------------------------===//
