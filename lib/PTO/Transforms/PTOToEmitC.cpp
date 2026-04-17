@@ -4641,6 +4641,26 @@ struct PTOWaitFlagToEmitC : public OpConversionPattern<mlir::pto::WaitFlagOp> {
   }
 };
 
+struct PTOSyncToEmitC : public OpConversionPattern<mlir::pto::TSyncOp> {
+  using OpConversionPattern<mlir::pto::TSyncOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(mlir::pto::TSyncOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value, 4> operands;
+    operands.reserve(adaptor.getEvents().size());
+    for (Value event : adaptor.getEvents())
+      operands.push_back(peelUnrealized(event));
+
+    rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{}, "TSYNC",
+        /*args=*/ArrayAttr{},
+        /*templateArgs=*/ArrayAttr{},
+        /*operands=*/ValueRange(operands));
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct PTOSyncFlagDynToEmitC : public ConversionPattern {
   PTOSyncFlagDynToEmitC(TypeConverter &typeConverter, MLIRContext *ctx,
                         StringRef opName, StringRef callee)
@@ -10163,6 +10183,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOSubSCToEmitC>(typeConverter, ctx);
   patterns.add<PTOSubCSToEmitC>(typeConverter, ctx);
   patterns.add<PTOWaitFlagToEmitC>(typeConverter, ctx);
+  patterns.add<PTOSyncToEmitC>(typeConverter, ctx);
   patterns.add<PTOGetBufToEmitC>(typeConverter, ctx);
   patterns.add<PTORlsBufToEmitC>(typeConverter, ctx);
   patterns.add<PTOSetFFTsToEmitC>(typeConverter, ctx);

@@ -2119,6 +2119,21 @@ def BarrierOp : PTO_Op<"barrier"> {
   let assemblyFormat = "$pipe attr-dict";
 }
 
+def TSyncOp : PTO_TOp<"tsync"> {
+  let summary = "Direct TSYNC mapping (variadic operands).";
+  let description = [{
+    Lowers directly to a `TSYNC(...)` intrinsic call with the same operand list.
+    This op is intentionally a thin bridge for explicit synchronization usage.
+  }];
+
+  let arguments = (ins Variadic<PTODpsType>:$events);
+  let results = (outs);
+
+  let assemblyFormat = [{
+    `ins` `(` $events `:` type($events) `)` attr-dict
+  }];
+}
+
 
 //===----------------------------------------------------------------------===//
 // FFT Configuration Operation

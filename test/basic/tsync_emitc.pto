@@ -1,0 +1,13 @@
+// RUN: ptoas --pto-arch=a5 %s | FileCheck %s
+
+module {
+  func.func @tsync_emitc(%src0: memref<32x32xf32, #pto.address_space<gm>>,
+                         %src1: memref<32x32xf32, #pto.address_space<gm>>) {
+    pto.tsync ins(%src0, %src1 : memref<32x32xf32, #pto.address_space<gm>>, memref<32x32xf32, #pto.address_space<gm>>)
+
+    return
+  }
+}
+
+// CHECK-LABEL: __global__ AICORE void tsync_emitc(
+// CHECK: TSYNC(
