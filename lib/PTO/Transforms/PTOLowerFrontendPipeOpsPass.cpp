@@ -49,11 +49,12 @@ static FailureOr<Value> createFrontendPipe(InitOpT initOp, IRRewriter &rewriter,
   auto dirAttr = rewriter.getI8IntegerAttr(dirMask);
   auto slotSizeAttr = rewriter.getI32IntegerAttr(initOp.getSlotSize());
   auto slotNumAttr = rewriter.getI32IntegerAttr(slotNum);
+  auto noSplitAttr = initOp.getNosplitAttr();
 
   if (arch == PTOArch::A5) {
     auto pipe = rewriter.create<InitializeL2LPipeOp>(
         loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, IntegerAttr{},
-        localAddr, peerLocalAddr);
+        noSplitAttr, localAddr, peerLocalAddr);
     return pipe.getPipe();
   }
 
@@ -63,7 +64,8 @@ static FailureOr<Value> createFrontendPipe(InitOpT initOp, IRRewriter &rewriter,
   auto localSlotNumAttr = rewriter.getI32IntegerAttr(slotNum);
   auto pipe = rewriter.create<InitializeL2G2LPipeOp>(
       loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, localSlotNumAttr,
-      IntegerAttr{}, initOp.getGmSlotBuffer(), localAddr, peerLocalAddr);
+      IntegerAttr{}, noSplitAttr, initOp.getGmSlotBuffer(), localAddr,
+      peerLocalAddr);
   return pipe.getPipe();
 }
 
